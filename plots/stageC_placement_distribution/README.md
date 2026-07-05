@@ -21,8 +21,8 @@ python3 -m pip install -r plots/stageC_placement_distribution/requirements.txt
 python3 plots/stageC_placement_distribution/generate_stageC_placement_distribution.py
 ```
 
-By default, the script uses the first sorted placement CSV for each of the six
-canonical ratios:
+By default, the script scans all ratio folders under `Input/placements` and uses
+the first sorted placement CSV for each ratio. The built-in display order is:
 
 - `2-1`
 - `1-1`
@@ -30,6 +30,10 @@ canonical ratios:
 - `1-2`
 - `1-2.5`
 - `1-3`
+- `1-3.5`
+- `1-4`
+
+Additional valid ratio folders are appended after these in numeric order.
 
 Use another representative placement by passing a zero-based index:
 

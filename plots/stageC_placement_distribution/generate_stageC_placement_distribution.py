@@ -47,7 +47,7 @@ except AttributeError as exc:
 SCRIPT_DIR = Path(__file__).resolve().parent
 FONT_DIR = SCRIPT_DIR / "fonts"
 
-DESIRED_RATIO_ORDER = ["2-1", "1-1", "1-1.5", "1-2", "1-2.5", "1-3"]
+DESIRED_RATIO_ORDER = ["2-1", "1-1", "1-1.5", "1-2", "1-2.5", "1-3", "1-3.5", "1-4"]
 RATIO_RE = re.compile(
     r"^(?P<bn>[+]?(?:\d+(?:\.\d*)?|\.\d+))-(?P<zns>[+]?(?:\d+(?:\.\d*)?|\.\d+))$"
 )
@@ -171,8 +171,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ratios",
         nargs="+",
-        default=DESIRED_RATIO_ORDER,
-        help="Ratio folders to plot. Default: six canonical ratios.",
+        default=None,
+        help="Ratio folders to plot. Defaults to all ratio folders found under the placement root.",
     )
     parser.add_argument(
         "--placement-index",
@@ -223,6 +223,22 @@ def ratio_display_sort_key(ratio: RatioKey) -> tuple[int, float, float]:
         return (DESIRED_RATIO_ORDER.index(ratio.tag), ratio.bn_wt, ratio.zns_wt)
     except ValueError:
         return (len(DESIRED_RATIO_ORDER), ratio.bn_wt, ratio.zns_wt)
+
+
+def discover_ratio_tags(placement_root: Path) -> list[str]:
+    ratio_tags: list[str] = []
+    for ratio_dir in sorted(placement_root.iterdir()):
+        if not ratio_dir.is_dir():
+            continue
+        try:
+            parse_ratio_tag(ratio_dir.name)
+        except ValueError:
+            continue
+        if any(ratio_dir.rglob("*.csv")):
+            ratio_tags.append(ratio_dir.name)
+    if not ratio_tags:
+        raise SystemExit(f"No placement ratio folders with CSV files found under {placement_root}")
+    return ratio_tags
 
 
 def safe_float(value: str | None, *, default: float) -> float:
@@ -352,9 +368,18 @@ def box_edges(data: PlacementData) -> list[list[tuple[float, float, float]]]:
     return edges
 
 
+def panel_grid(n_panels: int) -> tuple[int, int]:
+    if n_panels <= 0:
+        return 1, 1
+    cols = min(4, max(1, math.ceil(math.sqrt(n_panels))))
+    rows = math.ceil(n_panels / cols)
+    return rows, cols
+
+
 def plot_3d_panels(placements: list[PlacementData], output_path: Path, max_points: int) -> None:
-    fig = plt.figure(figsize=(12.6, 8.0))
-    axes = [fig.add_subplot(2, 3, idx + 1, projection="3d") for idx in range(len(placements))]
+    rows, cols = panel_grid(len(placements))
+    fig = plt.figure(figsize=(4.2 * cols, 3.9 * rows + 0.45))
+    axes = [fig.add_subplot(rows, cols, idx + 1, projection="3d") for idx in range(len(placements))]
 
     for idx, (ax, data) in enumerate(zip(axes, placements)):
         bn = downsample(data.bn, max_points, seed=1000 + idx)
@@ -432,7 +457,7 @@ def plot_3d_panels(placements: list[PlacementData], output_path: Path, max_point
         bbox_to_anchor=(0.5, 0.012),
     )
     fig.suptitle("Stage C representative placement center distributions", y=0.985, fontsize=14)
-    fig.subplots_adjust(left=0.02, right=0.99, top=0.91, bottom=0.07, wspace=0.02, hspace=0.12)
+    fig.subplots_adjust(left=0.02, right=0.99, top=0.91, bottom=0.07, wspace=0.03, hspace=0.16)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
@@ -456,9 +481,11 @@ def plot_slice_panels(
     plane_axes = [idx for idx in range(3) if idx != axis_idx]
     labels = ["x", "y", "z"]
 
-    fig, axes = plt.subplots(2, 3, figsize=(12.4, 7.5), constrained_layout=False)
+    rows, cols = panel_grid(len(placements))
+    fig, axes = plt.subplots(rows, cols, figsize=(4.15 * cols, 3.55 * rows + 0.45), constrained_layout=False)
+    axes_arr = np.asarray(axes, dtype=object).reshape(-1)
 
-    for idx, (ax, data) in enumerate(zip(axes.ravel(), placements)):
+    for idx, (ax, data) in enumerate(zip(axes_arr, placements)):
         bn_slice = data.bn[slice_mask(data.bn, axis_idx, center, half_width), :]
         zns_slice = data.zns[slice_mask(data.zns, axis_idx, center, half_width), :]
         bn_plot = downsample(bn_slice, max_points, seed=3000 + idx)
@@ -499,6 +526,9 @@ def plot_slice_panels(
         )
         style_2d_axes(ax)
 
+    for ax in axes_arr[len(placements) :]:
+        ax.set_visible(False)
+
     legend_handles = [
         Line2D(
             [0],
@@ -535,7 +565,7 @@ def plot_slice_panels(
         y=0.985,
         fontsize=14,
     )
-    fig.subplots_adjust(left=0.06, right=0.99, top=0.90, bottom=0.09, wspace=0.22, hspace=0.34)
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.90, bottom=0.09, wspace=0.24, hspace=0.34)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
@@ -610,7 +640,8 @@ def main() -> None:
     if not placement_root.is_dir():
         raise SystemExit(f"Placement root not found: {placement_root}")
 
-    requested_ratios = [parse_ratio_tag(tag) for tag in args.ratios]
+    ratio_tags = args.ratios if args.ratios is not None else discover_ratio_tags(placement_root)
+    requested_ratios = [parse_ratio_tag(tag) for tag in ratio_tags]
     requested_ratios = sorted(requested_ratios, key=ratio_display_sort_key)
 
     placements: list[PlacementData] = []
