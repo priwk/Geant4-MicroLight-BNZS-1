@@ -51,6 +51,9 @@ private:
   G4UIcommand *fStageDClearanceBinEdgesCmd;
   G4UIcmdWithAnInteger *fStageDMaxParticleReentryTrialsCmd;
   G4UIcmdWithAnInteger *fStageDMaxPortalFallbackLevelCmd;
+  G4UIcmdWithABool *fStageDWriteReentryDiagnosticsCmd;
+  G4UIcmdWithADouble *fStageDReentryDiagnosticsSamplingRateCmd;
+  G4UIcmdWithAnInteger *fStageDMaxDiagnosticRowsCmd;
   G4UIcommand *fOpticalParamsCmd;
   G4UIcommand *fWeightRatioCmd;
 };

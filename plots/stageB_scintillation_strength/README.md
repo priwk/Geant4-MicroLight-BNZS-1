@@ -12,9 +12,9 @@ The script reads:
 
 The Stage B slim files are interpreted as replay-weighted trajectory samples.
 `capture_anchors.csv` defines the full denominator, including trajectories with
-zero ZnS(Ag) deposition. `zns_track_steps.csv` only contributes the numerator
-and energy sum. This is important for Fig. 3(b): zero-deposition capture
-outcomes remain in the average.
+zero ZnS(Ag) deposition. `zns_track_steps.csv` contributes ZnS(Ag) deposition
+from alpha, Li-7, and their transported secondaries. This is important for
+Fig. 3(b): zero-deposition capture outcomes remain in the average.
 
 ## Run
 

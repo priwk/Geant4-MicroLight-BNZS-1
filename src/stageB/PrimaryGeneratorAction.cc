@@ -22,6 +22,7 @@
 // #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -211,6 +212,12 @@ namespace
     return WeightPartToTagString(bnWt) + "-" + WeightPartToTagString(znsWt);
   }
 
+  G4bool RelativeClose(G4double lhs, G4double rhs, G4double relativeTolerance)
+  {
+    const G4double scale = std::max(std::abs(lhs), std::abs(rhs));
+    return scale > 0.0 && std::abs(lhs - rhs) <= relativeTolerance * scale;
+  }
+
 }
 
 // --------------------------------------------------------------------
@@ -226,6 +233,7 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
       fCurrentRecordInputFile(""),
       fCurrentHeaderIndex(),
       fCurrentInputRecordCounter(0),
+      fInputFileUidByPath(),
       fFirstRecordForGeometry(),
       fHasFirstRecordForGeometry(false),
       fNoMoreInput(false),
@@ -233,6 +241,7 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
       fAlphaLiReplayPerCapture(ReadAlphaLiReplayPerCapture()),
       fCurrentAlphaLiReplayIndex(0),
       fRemainingReplaysForCurrentCapture(0),
+      fCurrentReplayValid(false),
       fInitializedCaptureCsvPath(""),
       fInitializedCaptureInputDir(""),
       fCurrentRecord(),
@@ -250,7 +259,6 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
     fInitializedCaptureCsvPath = fConfig->captureCsvPath;
     fInitializedCaptureInputDir = fConfig->captureInputDir;
   }
-  ConfigureDetectorFromInput();
 
   // temporary default, will be overwritten event-by-event
   auto *particleTable = G4ParticleTable::GetParticleTable();
@@ -281,17 +289,6 @@ void PrimaryGeneratorAction::RefreshInputSelectionFromConfig()
     fCurrentInputStream.close();
 
   InitializeInputStreaming();
-  const auto *det = dynamic_cast<const DetectorConstruction *>(
-      G4RunManager::GetRunManager()->GetUserDetectorConstruction());
-  if (det != nullptr && fHasFirstRecordForGeometry &&
-      (std::abs(det->GetBnWt() - fFirstRecordForGeometry.bn_wt) > 1.0e-12 ||
-       std::abs(det->GetZnsWt() - fFirstRecordForGeometry.zns_wt) > 1.0e-12))
-  {
-    G4Exception("PrimaryGeneratorAction::RefreshInputSelectionFromConfig",
-                "BNZS011", FatalException,
-                "Refreshed Stage B input ratio does not match the initialized geometry. Set the weight ratio before /run/initialize.");
-    return;
-  }
   fInitializedCaptureCsvPath = fConfig->captureCsvPath;
   fInitializedCaptureInputDir = fConfig->captureInputDir;
 
@@ -527,6 +524,22 @@ G4bool PrimaryGeneratorAction::ParseOneRecordLine(
     rec.record_index = fallbackRecordIndex;
   }
 
+  rec.input_file_uid = field("input_file_uid");
+  const std::string placementReplayIndex = field("placement_replay_index");
+  if (!placementReplayIndex.empty())
+  {
+    try
+    {
+      rec.placement_replay_index = std::stoi(placementReplayIndex);
+    }
+    catch (...)
+    {
+      return false;
+    }
+    if (rec.placement_replay_index < 0)
+      return false;
+  }
+
   return true;
 }
 
@@ -621,6 +634,8 @@ G4bool PrimaryGeneratorAction::ReadNextRecord(CaptureRecord &rec)
               rec))
       {
         fCurrentRecordInputFile = fCurrentInputFile;
+        if (rec.input_file_uid.empty())
+          rec.input_file_uid = InputFileUid(fCurrentRecordInputFile);
         ++fTotalStreamedRecords;
         ++fCurrentInputRecordCounter;
         return true;
@@ -645,8 +660,10 @@ void PrimaryGeneratorAction::InitializeInputStreaming()
   fCurrentRecordInputFile.clear();
   fCurrentHeaderIndex.clear();
   fCurrentInputRecordCounter = 0;
+  fInputFileUidByPath.clear();
   fCurrentAlphaLiReplayIndex = 0;
   fRemainingReplaysForCurrentCapture = 0;
+  fCurrentReplayValid = false;
 
   if (candidateInputFiles.empty())
   {
@@ -744,25 +761,89 @@ void PrimaryGeneratorAction::InitializeInputStreaming()
 
 // --------------------------------------------------------------------
 
-void PrimaryGeneratorAction::ConfigureDetectorFromInput()
+void PrimaryGeneratorAction::ValidateDetectorAgainstInput() const
 {
-  const auto *detConst = dynamic_cast<const DetectorConstruction *>(
+  const auto *detector = dynamic_cast<const DetectorConstruction *>(
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
-
-  auto *det = const_cast<DetectorConstruction *>(detConst);
-
-  if (!det || !fHasFirstRecordForGeometry)
+  if (detector == nullptr || !fHasFirstRecordForGeometry)
   {
-    G4Exception("PrimaryGeneratorAction::ConfigureDetectorFromInput",
+    G4Exception("PrimaryGeneratorAction::ValidateDetectorAgainstInput",
                 "BNZS009", FatalException,
                 "DetectorConstruction is not available or first input record missing.");
     return;
   }
 
-  // Keep microstructure geometry fixed.
-  // Only set composition once from the first input record.
-  det->SetWeightRatio(fFirstRecordForGeometry.bn_wt,
-                      fFirstRecordForGeometry.zns_wt);
+  const G4double inputRatio =
+      fFirstRecordForGeometry.zns_wt / fFirstRecordForGeometry.bn_wt;
+  if (detector->GetPlacementFormatVersion() == 3)
+  {
+    const G4double geometryRatio = detector->GetPlacementZnSToBNMassRatio();
+    constexpr G4double kDiscreteRveRelativeTolerance = 0.01;
+    if (!RelativeClose(inputRatio, geometryRatio, kDiscreteRveRelativeTolerance))
+    {
+      std::ostringstream message;
+      message << "Stage B input nominal BN:ZnS ratio 1:" << inputRatio
+              << " does not match the loaded RVE actual mass ratio 1:"
+              << geometryRatio << " within "
+              << 100.0 * kDiscreteRveRelativeTolerance << "%.";
+      G4Exception("PrimaryGeneratorAction::ValidateDetectorAgainstInput",
+                  "BNZS012", FatalException, message.str().c_str());
+      return;
+    }
+  }
+  else
+  {
+    const G4double configuredRatio =
+        (fConfig != nullptr && fConfig->bnWt > 0.0)
+            ? fConfig->znsWt / fConfig->bnWt
+            : detector->GetZnsWt() / detector->GetBnWt();
+    if (!RelativeClose(inputRatio, configuredRatio, 1.0e-9))
+    {
+      std::ostringstream message;
+      message << "Stage B input BN:ZnS ratio 1:" << inputRatio
+              << " does not match the initialized legacy geometry ratio 1:"
+              << configuredRatio
+              << ". Select the ratio before /run/initialize.";
+      G4Exception("PrimaryGeneratorAction::ValidateDetectorAgainstInput",
+                  "BNZS011", FatalException, message.str().c_str());
+      return;
+    }
+  }
+
+  G4cout << "[PrimaryGeneratorAction] Stage B input/RVE ratio validated:"
+         << " nominal 1:" << inputRatio;
+  if (detector->GetPlacementFormatVersion() == 3)
+    G4cout << ", actual RVE 1:" << detector->GetPlacementZnSToBNMassRatio();
+  G4cout << G4endl;
+}
+
+// --------------------------------------------------------------------
+
+std::string PrimaryGeneratorAction::InputFileUid(const std::string &path)
+{
+  const auto cached = fInputFileUidByPath.find(path);
+  if (cached != fInputFileUidByPath.end())
+    return cached->second;
+
+  std::ifstream input(path, std::ios::binary);
+  std::uint64_t hash = 14695981039346656037ULL;
+  char buffer[8192];
+  while (input)
+  {
+    input.read(buffer, sizeof(buffer));
+    const std::streamsize count = input.gcount();
+    for (std::streamsize index = 0; index < count; ++index)
+    {
+      hash ^= static_cast<unsigned char>(buffer[index]);
+      hash *= 1099511628211ULL;
+    }
+  }
+
+  std::ostringstream value;
+  value << 'f' << std::hex << std::setfill('0') << std::setw(16) << hash;
+  const std::string uid = value.str();
+  fInputFileUidByPath.emplace(path, uid);
+  return uid;
 }
 
 // --------------------------------------------------------------------
@@ -885,9 +966,17 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
 
 std::string PrimaryGeneratorAction::MakeCurrentSourceEventUid() const
 {
+  const auto *detector = dynamic_cast<const DetectorConstruction *>(
+      G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+  const std::string placementSeed =
+      detector != nullptr && !detector->GetLoadedPlacementSeedBase().empty()
+          ? detector->GetLoadedPlacementSeedBase()
+          : "unknown";
   std::ostringstream oss;
-  oss << MakeCurrentPhysicalEventUid() << "_"
-      << fCurrentAlphaLiReplayIndex;
+  oss << MakeCurrentPhysicalEventUid()
+      << "_p" << placementSeed
+      << "_m" << fCurrentRecord.placement_replay_index
+      << "_a" << fCurrentAlphaLiReplayIndex;
   return oss.str();
 }
 
@@ -901,8 +990,11 @@ G4double PrimaryGeneratorAction::GetCurrentTrajectoryWeight() const
 std::string PrimaryGeneratorAction::MakeCurrentPhysicalEventUid() const
 {
   std::ostringstream oss;
-  oss << fCurrentRecord.eventID << "_"
-      << fCurrentRecord.record_index;
+  oss << (fCurrentRecord.input_file_uid.empty()
+              ? "funknown"
+              : fCurrentRecord.input_file_uid)
+      << "_e" << fCurrentRecord.eventID
+      << "_r" << fCurrentRecord.record_index;
   return oss.str();
 }
 
@@ -939,15 +1031,19 @@ G4double PrimaryGeneratorAction::DetermineTargetLocalZ(
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
   const G4double localT = det->GetEffectiveLocalThickness();
+  const G4double halfLocalT = 0.5 * localT;
+  const G4double surfaceEpsilon = 1.0e-4 * um;
 
   if (mode == "front_surface")
   {
-    return +0.5 * localT - rec.depth_um * um;
+    return std::min(halfLocalT - surfaceEpsilon,
+                    halfLocalT - rec.depth_um * um);
   }
 
   if (mode == "back_surface")
   {
-    return -0.5 * localT + (rec.thickness_um - rec.depth_um) * um;
+    return std::max(-halfLocalT + surfaceEpsilon,
+                    -halfLocalT + (rec.thickness_um - rec.depth_um) * um);
   }
 
   // Bulk events keep depth_um only as macroscopic metadata.
@@ -1175,6 +1271,7 @@ void PrimaryGeneratorAction::GenerateReactionProducts(
 void PrimaryGeneratorAction::GeneratePrimaries(G4Event *event)
 {
   const G4int geantEventID = event->GetEventID();
+  fCurrentReplayValid = false;
 
   if (fRemainingReplaysForCurrentCapture <= 0)
   {
@@ -1199,6 +1296,7 @@ void PrimaryGeneratorAction::GeneratePrimaries(G4Event *event)
       event,
       fCurrentLocalCapturePosition,
       useGroundStateBranch);
+  fCurrentReplayValid = true;
 
   --fRemainingReplaysForCurrentCapture;
 

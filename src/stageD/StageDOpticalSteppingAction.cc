@@ -46,6 +46,17 @@ namespace
     None
   };
 
+  enum class OpticalBoundaryTransition
+  {
+    Reflection,
+    Transmission,
+    Absorption,
+    Detection,
+    StepTooSmall,
+    Unavailable,
+    Other
+  };
+
   G4bool IsOpticalPhoton(const G4Track *track)
   {
     return track != nullptr &&
@@ -255,37 +266,6 @@ namespace
     return DetectorConstruction::Phase::Unknown;
   }
 
-  G4OpBoundaryProcess *FindOpticalBoundaryProcess()
-  {
-    auto *definition = G4OpticalPhoton::OpticalPhotonDefinition();
-    if (definition == nullptr)
-      return nullptr;
-
-    auto *processManager = definition->GetProcessManager();
-    if (processManager == nullptr)
-      return nullptr;
-
-    auto *processList = processManager->GetProcessList();
-    if (processList == nullptr)
-      return nullptr;
-
-    const G4int nProcesses = processManager->GetProcessListLength();
-    for (G4int i = 0; i < nProcesses; ++i)
-    {
-      auto *process = (*processList)[i];
-      auto *boundary = dynamic_cast<G4OpBoundaryProcess *>(process);
-      if (boundary != nullptr)
-        return boundary;
-    }
-    return nullptr;
-  }
-
-  G4OpBoundaryProcessStatus CurrentBoundaryStatus()
-  {
-    auto *boundary = FindOpticalBoundaryProcess();
-    return boundary ? boundary->GetStatus() : Undefined;
-  }
-
   G4bool IsBoundaryReflection(G4OpBoundaryProcessStatus status)
   {
     return status == FresnelReflection ||
@@ -321,14 +301,28 @@ namespace
            status == CoatedDielectricReflection;
   }
 
-  G4bool IsBoundaryTransmission(G4OpBoundaryProcessStatus status)
+  OpticalBoundaryTransition ClassifyBoundaryTransition(
+      G4OpBoundaryProcessStatus status)
   {
-    return status == Transmission ||
-           status == FresnelRefraction ||
-           status == SameMaterial ||
-           status == StepTooSmall ||
-           status == CoatedDielectricRefraction ||
-           status == CoatedDielectricFrustratedTransmission;
+    if (IsBoundaryReflection(status))
+      return OpticalBoundaryTransition::Reflection;
+    if (status == Transmission ||
+        status == FresnelRefraction ||
+        status == SameMaterial ||
+        status == CoatedDielectricRefraction ||
+        status == CoatedDielectricFrustratedTransmission)
+    {
+      return OpticalBoundaryTransition::Transmission;
+    }
+    if (status == Absorption)
+      return OpticalBoundaryTransition::Absorption;
+    if (status == Detection)
+      return OpticalBoundaryTransition::Detection;
+    if (status == StepTooSmall)
+      return OpticalBoundaryTransition::StepTooSmall;
+    if (status == Undefined || status == NotAtBoundary)
+      return OpticalBoundaryTransition::Unavailable;
+    return OpticalBoundaryTransition::Other;
   }
 
   G4bool IsPhaseTransmission(DetectorConstruction::Phase prePhase,
@@ -589,6 +583,7 @@ StageDOpticalSteppingAction::StageDOpticalSteppingAction(
       fRunAction(runAction),
       fEventAction(eventAction),
       fDetector(nullptr),
+      fBoundaryProcess(nullptr),
       fReentrySampler(nullptr)
 {
 }
@@ -606,6 +601,27 @@ const DetectorConstruction *StageDOpticalSteppingAction::ResolveDetector() const
         G4RunManager::GetRunManager()->GetUserDetectorConstruction());
   }
   return fDetector;
+}
+
+G4OpBoundaryProcess *StageDOpticalSteppingAction::ResolveBoundaryProcess() const
+{
+  if (fBoundaryProcess != nullptr)
+    return fBoundaryProcess;
+
+  auto *definition = G4OpticalPhoton::OpticalPhotonDefinition();
+  auto *processManager = definition != nullptr ? definition->GetProcessManager() : nullptr;
+  auto *processList = processManager != nullptr ? processManager->GetProcessList() : nullptr;
+  if (processList == nullptr)
+    return nullptr;
+
+  const G4int nProcesses = processManager->GetProcessListLength();
+  for (G4int i = 0; i < nProcesses; ++i)
+  {
+    fBoundaryProcess = dynamic_cast<G4OpBoundaryProcess *>((*processList)[i]);
+    if (fBoundaryProcess != nullptr)
+      break;
+  }
+  return fBoundaryProcess;
 }
 
 G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
@@ -880,29 +896,6 @@ G4bool StageDOpticalSteppingAction::HandleLimitKills(const G4Step *step, G4Track
     return true;
   }
 
-  const std::string processName = ProcessName(step->GetPostStepPoint());
-  if (processName == "OpAbsorption")
-  {
-    const auto *prePoint = step->GetPreStepPoint();
-    const auto *prePV = (prePoint != nullptr) ? prePoint->GetPhysicalVolume() : nullptr;
-    const auto *detector = ResolveDetector();
-    const auto phase = PhaseFromPhysicalVolume(prePV, detector);
-    if ((event.encounter_active ||
-         event.source_inside_particle_pending_exit) &&
-        IsParticlePhase(phase))
-    {
-      fEventAction->MarkCensoredEncounterIfActive();
-    }
-    else if (event.encounter_active ||
-             event.source_inside_particle_pending_exit)
-    {
-      ++event.num_inconsistent_encounter_state;
-      fEventAction->MarkCensoredEncounterIfActive();
-    }
-    fEventAction->MarkAbsorbed(DetectorConstruction::PhaseName(phase));
-    return false;
-  }
-
   if (track->GetTrackStatus() == fStopAndKill &&
       event.final_status == "in_progress")
   {
@@ -952,7 +945,11 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
     event.path_length_world_um += stepLengthUm;
 
   const std::string processName = ProcessName(postPoint);
-  const G4OpBoundaryProcessStatus boundaryStatus = CurrentBoundaryStatus();
+  auto *boundaryProcess = ResolveBoundaryProcess();
+  const G4OpBoundaryProcessStatus boundaryStatus =
+      boundaryProcess != nullptr ? boundaryProcess->GetStatus() : Undefined;
+  const OpticalBoundaryTransition boundaryTransition =
+      ClassifyBoundaryTransition(boundaryStatus);
   const G4ThreeVector preDir = prePoint->GetMomentumDirection();
   const G4ThreeVector postDir = postPoint->GetMomentumDirection();
   const G4bool isGeomBoundary = (postPoint->GetStepStatus() == fGeomBoundary);
@@ -963,7 +960,6 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
     if (fConfig == nullptr || fConfig->stageD_boundary_mode != "periodic_wrap")
       AccumulateOuterBoundaryStatus(event, boundaryStatus);
 
-    const G4int reentryFailedBefore = event.num_reentry_failed;
     const G4int reentryBefore = event.num_reentry;
     if (HandleBoundaryReentry(step, track, detector, prePhase))
     {
@@ -971,20 +967,28 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
       {
         ++event.num_outer_boundary_reentry_success;
       }
-      else if (event.num_reentry_failed > reentryFailedBefore ||
-               event.final_status == "reentry_failed" ||
-               event.final_status == "max_reentry" ||
-               event.final_status == "escaped_debug")
+      else if (event.final_status == "escaped_debug")
       {
+        ++event.num_outer_boundary_escape;
+      }
+      else if (event.final_status == "max_reentry")
+      {
+        ++event.num_outer_boundary_max_reentry_stop;
+      }
+      else if (event.final_status == "periodic_phase_mismatch")
+      {
+        ++event.num_outer_boundary_periodic_phase_mismatch;
         ++event.num_outer_boundary_reentry_failed;
       }
       else
       {
+        ++event.num_outer_boundary_reentry_algorithm_failed;
         ++event.num_outer_boundary_reentry_failed;
       }
       return;
     }
 
+    ++event.num_outer_boundary_reentry_algorithm_failed;
     ++event.num_outer_boundary_reentry_failed;
     fEventAction->MarkCensoredEncounterIfActive();
     fEventAction->SetFinalStatus("reentry_failed", false);
@@ -992,14 +996,41 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
     return;
   }
 
+  if (processName == "OpAbsorption" ||
+      boundaryTransition == OpticalBoundaryTransition::Absorption)
+  {
+    if ((event.encounter_active ||
+         event.source_inside_particle_pending_exit) &&
+        !IsParticlePhase(prePhase))
+    {
+      ++event.num_inconsistent_encounter_state;
+    }
+    fEventAction->MarkCensoredEncounterIfActive();
+    fEventAction->MarkAbsorbed(DetectorConstruction::PhaseName(prePhase));
+    return;
+  }
+
+  if (boundaryTransition == OpticalBoundaryTransition::Detection)
+  {
+    fEventAction->MarkCensoredEncounterIfActive();
+    fEventAction->SetFinalStatus("detected", false);
+    return;
+  }
+
+  const G4bool phaseTransmissionFallback =
+      boundaryTransition == OpticalBoundaryTransition::Unavailable &&
+      IsPhaseTransmission(prePhase, postPhase);
+  const G4bool isBoundaryTransmission =
+      boundaryTransition == OpticalBoundaryTransition::Transmission ||
+      phaseTransmissionFallback;
+  const G4bool isBoundaryReflection =
+      boundaryTransition == OpticalBoundaryTransition::Reflection;
+
   const G4bool isMaterialBoundary =
+      boundaryTransition != OpticalBoundaryTransition::StepTooSmall &&
       (isGeomBoundary ||
        processName == "OpBoundary" ||
-       (prePhase != DetectorConstruction::Phase::Unknown &&
-        postPhase != DetectorConstruction::Phase::Unknown &&
-        prePhase != postPhase &&
-        prePhase != DetectorConstruction::Phase::World &&
-        postPhase != DetectorConstruction::Phase::World));
+       phaseTransmissionFallback);
   if (isMaterialBoundary)
   {
     ++event.num_material_boundary;
@@ -1007,8 +1038,7 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
 
   if (prePhase == DetectorConstruction::Phase::Matrix &&
       isMaterialBoundary &&
-      !IsPhaseTransmission(prePhase, postPhase) &&
-      IsBoundaryReflection(boundaryStatus))
+      isBoundaryReflection)
   {
     DetectorConstruction::Phase particlePhase = postPhase;
     if (!IsParticlePhase(particlePhase) && detector != nullptr)
@@ -1025,8 +1055,7 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
   }
   else if (prePhase == DetectorConstruction::Phase::Matrix &&
            IsParticlePhase(postPhase) &&
-           (IsPhaseTransmission(prePhase, postPhase) ||
-            IsBoundaryTransmission(boundaryStatus)))
+           isBoundaryTransmission)
   {
     if (event.encounter_active || event.source_inside_particle_pending_exit)
     {
@@ -1040,8 +1069,7 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
   }
   else if (IsParticlePhase(prePhase) &&
            postPhase == DetectorConstruction::Phase::Matrix &&
-           (IsPhaseTransmission(prePhase, postPhase) ||
-            IsBoundaryTransmission(boundaryStatus)))
+           isBoundaryTransmission)
   {
     const auto encounterPhase = PhaseFromLabel(event.encounter_particle_phase);
     if (event.source_inside_particle_pending_exit &&
@@ -1073,13 +1101,14 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
   else if (event.encounter_active &&
            IsParticlePhase(prePhase) &&
            prePhase == PhaseFromLabel(event.encounter_particle_phase) &&
-           IsBoundaryReflection(boundaryStatus))
+           isBoundaryReflection)
   {
     // Internal particle reflections do not complete a matrix-to-matrix encounter.
   }
   else if (IsParticlePhase(prePhase) &&
            IsParticlePhase(postPhase) &&
-           prePhase != postPhase)
+           prePhase != postPhase &&
+           isBoundaryTransmission)
   {
     ++event.num_particle_to_particle_boundary;
   }

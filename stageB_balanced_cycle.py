@@ -124,6 +124,25 @@ def ensure_record_index_header(header):
     return header + ["record_index"], len(header)
 
 
+def ensure_header_column(header, name):
+    if name in header:
+        return header, header.index(name)
+    return header + [name], len(header)
+
+
+def capture_file_uid(csv_path):
+    hash_value = 14695981039346656037
+    with open(csv_path, "rb") as source:
+        while True:
+            block = source.read(8192)
+            if not block:
+                break
+            for byte in block:
+                hash_value ^= byte
+                hash_value = (hash_value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"f{hash_value:016x}"
+
+
 def read_capture_rows(csv_path, min_thickness_um):
     rows = []
     with open(csv_path, newline="") as f:
@@ -132,6 +151,11 @@ def read_capture_rows(csv_path, min_thickness_um):
         if header is None:
             return [], []
         header, record_index_col = ensure_record_index_header(list(header))
+        header, input_uid_col = ensure_header_column(header, "input_file_uid")
+        header, placement_replay_col = ensure_header_column(
+            header, "placement_replay_index"
+        )
+        source_uid = capture_file_uid(csv_path)
 
         for idx, row in enumerate(reader):
             if not row:
@@ -142,20 +166,31 @@ def read_capture_rows(csv_path, min_thickness_um):
                 continue
             if thickness + 1.0e-12 < min_thickness_um:
                 continue
-            if len(row) <= record_index_col:
-                row = list(row) + [""] * (record_index_col + 1 - len(row))
+            required_size = max(record_index_col, input_uid_col, placement_replay_col) + 1
+            if len(row) < required_size:
+                row = list(row) + [""] * (required_size - len(row))
             if not row[record_index_col].strip():
                 row[record_index_col] = str(idx)
+            if not row[input_uid_col].strip():
+                row[input_uid_col] = source_uid
+            if not row[placement_replay_col].strip():
+                row[placement_replay_col] = "0"
             rows.append(row)
     return header, rows
 
 
-def write_chunk(path, header, rows):
+def write_chunk(path, header, rows, placement_replay_index=0):
     path.parent.mkdir(parents=True, exist_ok=True)
+    header, replay_col = ensure_header_column(list(header), "placement_replay_index")
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
-        writer.writerows(rows)
+        for source_row in rows:
+            row = list(source_row)
+            if len(row) <= replay_col:
+                row.extend([""] * (replay_col + 1 - len(row)))
+            row[replay_col] = str(placement_replay_index)
+            writer.writerow(row)
 
 
 def remove_empty_parent_dirs(path, stop_at):
@@ -748,7 +783,12 @@ def run_grouped_by_chunk(
                 chunk_path = (
                     chunk_root / ratio / source_tag / f"m{replay_idx + 1:02d}" / chunk_name
                 )
-                write_chunk(chunk_path, assignment["header"], chunk_rows)
+                write_chunk(
+                    chunk_path,
+                    assignment["header"],
+                    chunk_rows,
+                    placement_replay_index=replay_idx,
+                )
 
                 log_file = (
                     log_root
@@ -851,7 +891,12 @@ def run_grouped_by_placement(
                     "neutron_capture_positions.csv"
                 )
                 chunk_path = placement_chunk_dir / chunk_name
-                write_chunk(chunk_path, assignment["header"], placement_chunk_rows)
+                write_chunk(
+                    chunk_path,
+                    assignment["header"],
+                    placement_chunk_rows,
+                    placement_replay_index=replay_idx,
+                )
                 event_count += len(placement_chunk_rows)
                 chunk_count += 1
 

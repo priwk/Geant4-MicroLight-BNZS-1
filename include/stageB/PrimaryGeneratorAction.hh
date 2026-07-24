@@ -18,6 +18,8 @@ struct CaptureRecord
 {
   G4int eventID = -1;
   G4int record_index = -1;
+  std::string input_file_uid;
+  G4int placement_replay_index = 0;
   G4double thickness_um = 0.0;
   G4double bn_wt = 0.0;
   G4double zns_wt = 0.0;
@@ -36,6 +38,7 @@ public:
 
   void GeneratePrimaries(G4Event *event) override;
   void RefreshInputSelectionFromConfig();
+  void ValidateDetectorAgainstInput() const;
 
   G4ParticleGun *GetParticleGun() const { return fParticleGun; }
 
@@ -49,6 +52,7 @@ public:
   G4int GetCurrentAlphaLiReplayIndex() const { return fCurrentAlphaLiReplayIndex; }
   G4int GetCurrentAlphaLiReplayCount() const { return fAlphaLiReplayPerCapture; }
   G4double GetCurrentTrajectoryWeight() const;
+  G4bool HasValidCurrentReplay() const { return fCurrentReplayValid; }
   std::string MakeCurrentPhysicalEventUid() const;
   std::string MakeCurrentSourceEventUid() const;
   G4int GetTotalLoadedEvents() const { return static_cast<G4int>(fTotalStreamedRecords); }
@@ -70,10 +74,10 @@ private:
       const HeaderIndex &headerIndex,
       G4int fallbackRecordIndex,
       CaptureRecord &rec) const;
-  void ConfigureDetectorFromInput();
   G4bool IsInputThicknessCompatible(G4double thickness_um, G4double localT_um) const;
   G4int ReadAlphaLiReplayPerCapture() const;
   G4bool PrepareCurrentCaptureReplayState();
+  std::string InputFileUid(const std::string &path);
 
   // ---- event classification ----
   std::string DetermineSurfaceMode(const CaptureRecord &rec) const;
@@ -125,6 +129,7 @@ private:
   std::string fCurrentRecordInputFile;
   HeaderIndex fCurrentHeaderIndex;
   G4int fCurrentInputRecordCounter = 0;
+  std::unordered_map<std::string, std::string> fInputFileUidByPath;
 
   CaptureRecord fFirstRecordForGeometry;
   G4bool fHasFirstRecordForGeometry = false;
@@ -134,6 +139,7 @@ private:
   G4int fAlphaLiReplayPerCapture = 1;
   G4int fCurrentAlphaLiReplayIndex = 0;
   G4int fRemainingReplaysForCurrentCapture = 0;
+  G4bool fCurrentReplayValid = false;
   std::string fInitializedCaptureCsvPath;
   std::string fInitializedCaptureInputDir;
 

@@ -393,18 +393,20 @@ def choose_showcase_entry(
 
 
 def source_point(row: dict[str, str]) -> tuple[float, float, float]:
+    prefix = "unwrapped_" if "unwrapped_x_pre_um" in row else ""
     return (
-        safe_float(row.get("x_pre_um")),
-        safe_float(row.get("y_pre_um")),
-        safe_float(row.get("z_pre_um")),
+        safe_float(row.get(f"{prefix}x_pre_um")),
+        safe_float(row.get(f"{prefix}y_pre_um")),
+        safe_float(row.get(f"{prefix}z_pre_um")),
     )
 
 
 def end_point(row: dict[str, str]) -> tuple[float, float, float]:
+    prefix = "unwrapped_" if "unwrapped_x_post_um" in row else ""
     return (
-        safe_float(row.get("x_post_um")),
-        safe_float(row.get("y_post_um")),
-        safe_float(row.get("z_post_um")),
+        safe_float(row.get(f"{prefix}x_post_um")),
+        safe_float(row.get(f"{prefix}y_post_um")),
+        safe_float(row.get(f"{prefix}z_post_um")),
     )
 
 
@@ -450,6 +452,8 @@ def write_origin_aligned_csv(source_path: Path, output_path: Path, row_limit: in
             writer.writeheader()
 
             for row in reader:
+                if row.get("particle", "").strip() not in {"alpha", "Li7"}:
+                    continue
                 key = trajectory_key(row)
                 if key not in origins:
                     origins[key] = source_point(row)

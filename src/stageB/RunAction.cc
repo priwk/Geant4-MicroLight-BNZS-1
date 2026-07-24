@@ -38,6 +38,7 @@ RunAction::RunAction(PrimaryGeneratorAction *primaryAction, AnalysisConfig *conf
       fUnexpectedBoundaryExitCsv(),
       fUnexpectedBoundaryExitCsvPath(""),
       fBoundaryStopSummaryCsvPath(""),
+      fCurrentOutputInputPath(""),
       fBoundarySummaries()
 {
 }
@@ -255,7 +256,12 @@ void RunAction::WriteFullStepCsvHeader()
         << "ekin_post_keV,"
         << "source_event_uid,"
         << "record_index,"
-        << "trajectory_weight"
+        << "trajectory_weight,parentID,"
+        << "cell_ix,cell_iy,cell_iz,"
+        << "unwrapped_x_pre_um,unwrapped_y_pre_um,unwrapped_z_pre_um,"
+        << "unwrapped_x_post_um,unwrapped_y_post_um,unwrapped_z_post_um,"
+        << "screen_x_pre_um,screen_y_pre_um,screen_z_pre_um,screen_depth_pre_um,"
+        << "screen_x_post_um,screen_y_post_um,screen_z_post_um,screen_depth_post_um"
         << "\n";
 }
 
@@ -320,7 +326,12 @@ void RunAction::WriteSlimTrackCsvHeader()
         << "ekin_post_keV,"
         << "alphali_replay_index,"
         << "alphali_replay_count,"
-        << "trajectory_weight"
+        << "trajectory_weight,parentID,"
+        << "cell_ix,cell_iy,cell_iz,"
+        << "unwrapped_x_pre_um,unwrapped_y_pre_um,unwrapped_z_pre_um,"
+        << "unwrapped_x_post_um,unwrapped_y_post_um,unwrapped_z_post_um,"
+        << "screen_x_pre_um,screen_y_pre_um,screen_z_pre_um,screen_depth_pre_um,"
+        << "screen_x_post_um,screen_y_post_um,screen_z_post_um,screen_depth_post_um"
         << "\n";
 }
 
@@ -358,18 +369,18 @@ void RunAction::WriteUnexpectedBoundaryExitCsvHeader()
 
 void RunAction::OpenOutputsForInputPath(const std::string &inputPath)
 {
+    if (inputPath == fCurrentOutputInputPath)
+        return;
     OpenOutputsForPaths(MakeOutputPathsFromInputPath(inputPath));
+    fCurrentOutputInputPath = inputPath;
 }
 
 void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
 {
     const char *exceptionSource = "RunAction::OpenOutputsForPaths";
 
-    if (IsFullMode() && fFullStepCsv.is_open() && paths.full_steps == fFullStepCsvPath)
-    {
-        return;
-    }
-    if (IsSlimMode() && fCaptureAnchorCsv.is_open() &&
+    if ((!IsFullMode() || (fFullStepCsv.is_open() && paths.full_steps == fFullStepCsvPath)) &&
+        fCaptureAnchorCsv.is_open() &&
         paths.capture_anchors == fCaptureAnchorCsvPath &&
         fSlimTrackCsv.is_open() &&
         paths.zns_track_steps == fSlimTrackCsvPath &&
@@ -379,7 +390,7 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
         return;
     }
 
-    if (IsSlimMode() && !fBoundaryStopSummaryCsvPath.empty())
+    if (!fBoundaryStopSummaryCsvPath.empty())
     {
         WriteBoundarySummaryCsv();
     }
@@ -413,8 +424,6 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
             return;
         }
         WriteFullStepCsvHeader();
-        G4cout << "[RunAction] Switched full output CSV to: " << fFullStepCsvPath << G4endl;
-        return;
     }
 
     fCaptureAnchorCsv.open(fCaptureAnchorCsvPath.c_str(), std::ios::out);
@@ -447,9 +456,10 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
     }
     WriteUnexpectedBoundaryExitCsvHeader();
 
-    G4cout << "[RunAction] Switched slim output CSVs to:"
+    G4cout << "[RunAction] Switched Stage B output CSVs to:"
+           << (IsFullMode() ? "\n  full alpha/Li tracks = " + fFullStepCsvPath : "")
            << "\n  anchors = " << fCaptureAnchorCsvPath
-           << "\n  tracks  = " << fSlimTrackCsvPath
+           << "\n  ZnS deposition steps = " << fSlimTrackCsvPath
            << "\n  unexpected exits = " << fUnexpectedBoundaryExitCsvPath
            << "\n  summary = " << fBoundaryStopSummaryCsvPath
            << G4endl;
@@ -462,6 +472,7 @@ void RunAction::SwitchOutputCsvForInputPath(const std::string &inputPath)
 
 void RunAction::SwitchOutputCsvForThicknessTag(const std::string &thicknessTag)
 {
+    fCurrentOutputInputPath.clear();
     OpenOutputsForPaths(MakeOutputPathsFromThicknessTag(thicknessTag));
 }
 
@@ -472,7 +483,7 @@ void RunAction::AppendCaptureAnchor(const CaptureAnchorRow &row)
     summary.thickness_um = row.thickness_um;
     summary.placement_file = row.placement_file;
 
-    if (!IsSlimMode() || !fCaptureAnchorCsv.is_open())
+    if (!fCaptureAnchorCsv.is_open())
         return;
 
     fCaptureAnchorCsv
@@ -524,7 +535,7 @@ void RunAction::RecordBoundaryExit(const UnexpectedBoundaryExitRow &row,
     summary.max_unexpected_artificial_exit_ekin_post_keV =
         std::max(summary.max_unexpected_artificial_exit_ekin_post_keV, row.ekin_post_keV);
 
-    if (IsSlimMode() && fUnexpectedBoundaryExitCsv.is_open())
+    if (fUnexpectedBoundaryExitCsv.is_open())
     {
         fUnexpectedBoundaryExitCsv
             << row.physical_event_uid << ","
@@ -573,7 +584,7 @@ void RunAction::RecordBoundaryExit(const UnexpectedBoundaryExitRow &row,
 
 void RunAction::WriteBoundarySummaryCsv()
 {
-    if (!IsSlimMode() || fBoundaryStopSummaryCsvPath.empty())
+    if (fBoundaryStopSummaryCsvPath.empty())
         return;
 
     std::ofstream out(fBoundaryStopSummaryCsvPath.c_str(), std::ios::out);
@@ -652,16 +663,11 @@ void RunAction::BeginOfRunAction(const G4Run *run)
 
     G4cout << "\n[RunAction] Begin run " << run->GetRunID();
     if (IsFullMode())
-    {
-        G4cout << "\n  output CSV = " << fFullStepCsvPath;
-    }
-    else
-    {
-        G4cout << "\n  capture anchors = " << fCaptureAnchorCsvPath
-               << "\n  ZnS track CSV   = " << fSlimTrackCsvPath
-               << "\n  unexpected exits = " << fUnexpectedBoundaryExitCsvPath
-               << "\n  boundary summary = " << fBoundaryStopSummaryCsvPath;
-    }
+        G4cout << "\n  alpha/Li full CSV = " << fFullStepCsvPath;
+    G4cout << "\n  capture anchors = " << fCaptureAnchorCsvPath
+           << "\n  ZnS deposition CSV = " << fSlimTrackCsvPath
+           << "\n  unexpected exits = " << fUnexpectedBoundaryExitCsvPath
+           << "\n  boundary summary = " << fBoundaryStopSummaryCsvPath;
 
     if (fPrimaryAction)
     {
@@ -675,24 +681,16 @@ void RunAction::BeginOfRunAction(const G4Run *run)
 
 void RunAction::EndOfRunAction(const G4Run *run)
 {
-    if (IsSlimMode())
-    {
-        WriteBoundarySummaryCsv();
-    }
+    WriteBoundarySummaryCsv();
 
     CloseOpenOutputs();
 
     G4cout << "\n[RunAction] End run " << run->GetRunID();
     if (IsFullMode())
-    {
-        G4cout << "\n  closed CSV = " << fFullStepCsvPath;
-    }
-    else
-    {
-        G4cout << "\n  anchors CSV = " << fCaptureAnchorCsvPath
-               << "\n  tracks CSV  = " << fSlimTrackCsvPath
-               << "\n  unexpected exits CSV = " << fUnexpectedBoundaryExitCsvPath
-               << "\n  summary CSV = " << fBoundaryStopSummaryCsvPath;
-    }
+        G4cout << "\n  alpha/Li full CSV = " << fFullStepCsvPath;
+    G4cout << "\n  anchors CSV = " << fCaptureAnchorCsvPath
+           << "\n  ZnS deposition CSV = " << fSlimTrackCsvPath
+           << "\n  unexpected exits CSV = " << fUnexpectedBoundaryExitCsvPath
+           << "\n  summary CSV = " << fBoundaryStopSummaryCsvPath;
     G4cout << G4endl;
 }

@@ -74,16 +74,18 @@ python3 plots/stageD_zns_trajectories/generate_stageD_zns_trajectories.py \
   --max-showcase-steps 800000
 ```
 
-`stageD_zns_trajectory_showcase_3d.png` uses local RVE coordinates. If the
-selected input contains `capture_x_um`, `capture_y_um`, `depth_um`, and
-`local_capture_*` columns, the script also writes
+New Stage B files provide continuous `unwrapped_*` coordinates, so
+`stageD_zns_trajectory_showcase_3d.png` no longer folds trajectories back into
+one RVE after a periodic crossing. The original `x_*` columns remain folded
+local coordinates for geometry diagnostics. If the selected input contains
+explicit `screen_*` columns, the script uses them directly for
 `stageD_macro_trajectory_showcase_3d.png`. That figure maps each local step back
-to the macroscopic capture location using:
+to the macroscopic capture location. For legacy files it falls back to:
 
 ```text
 macro_x = capture_x_um + (local_x - local_capture_x_um)
 macro_y = capture_y_um + (local_y - local_capture_y_um)
-macro_z = depth_um     + (local_z - local_capture_z_um)
+macro_depth = depth_um - (local_z - local_capture_z_um)
 ```
 
 `stageD_origin_aligned_trajectory_showcase_3d.png` is a display-only transform:

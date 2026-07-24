@@ -41,6 +41,11 @@ void EventAction::BeginOfEventAction(const G4Event *event)
 
   fEdep = 0.0;
 
+  if (fPrimaryAction && !fPrimaryAction->HasValidCurrentReplay())
+  {
+    return;
+  }
+
   if (fPrimaryAction)
   {
     fCurrentRecord = fPrimaryAction->GetCurrentRecord();
@@ -122,6 +127,11 @@ RunAction::CaptureAnchorRow EventAction::MakeCurrentCaptureAnchorRow() const
 
 void EventAction::EndOfEventAction(const G4Event *event)
 {
+  if (fPrimaryAction && !fPrimaryAction->HasValidCurrentReplay())
+  {
+    return;
+  }
+
   // keep quiet for production; useful summary hook left here
   if (event->GetEventID() < 3)
   {
@@ -131,7 +141,7 @@ void EventAction::EndOfEventAction(const G4Event *event)
         << "  record_index=" << fCurrentRecord.record_index
         << "  replay=" << fCurrentAlphaLiReplayIndex << "/" << fCurrentAlphaLiReplayCount
         << "  mode=" << fCurrentSurfaceMode
-        << "  total edep=" << fEdep / keV << " keV"
+        << "  total ZnS edep (all tracks)=" << fEdep / keV << " keV"
         << G4endl;
   }
 }

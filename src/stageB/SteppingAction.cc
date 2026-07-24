@@ -30,19 +30,50 @@ namespace
     class PeriodicTrackInfo final : public G4VUserTrackInformation
     {
     public:
-        PeriodicTrackInfo(G4int originalTrackId, G4int completedSteps)
+        PeriodicTrackInfo(G4int originalTrackId,
+                          G4int completedSteps,
+                          G4int cellIx,
+                          G4int cellIy,
+                          G4int cellIz)
             : fOriginalTrackId(originalTrackId),
-              fCompletedSteps(completedSteps)
+              fCompletedSteps(completedSteps),
+              fCellIx(cellIx),
+              fCellIy(cellIy),
+              fCellIz(cellIz)
         {
         }
 
         void Print() const override {}
         G4int OriginalTrackId() const { return fOriginalTrackId; }
         G4int CompletedSteps() const { return fCompletedSteps; }
+        G4int CellIx() const { return fCellIx; }
+        G4int CellIy() const { return fCellIy; }
+        G4int CellIz() const { return fCellIz; }
 
     private:
         G4int fOriginalTrackId;
         G4int fCompletedSteps;
+        G4int fCellIx;
+        G4int fCellIy;
+        G4int fCellIz;
+    };
+
+    struct PeriodicCell
+    {
+        G4int ix = 0;
+        G4int iy = 0;
+        G4int iz = 0;
+    };
+
+    struct CoordinateFrame
+    {
+        PeriodicCell cell;
+        G4ThreeVector unwrappedPre;
+        G4ThreeVector unwrappedPost;
+        G4ThreeVector screenPre;
+        G4ThreeVector screenPost;
+        G4double screenDepthPre = 0.0;
+        G4double screenDepthPost = 0.0;
     };
 
     const PeriodicTrackInfo *GetPeriodicTrackInfo(const G4Track *track)
@@ -55,7 +86,9 @@ namespace
     G4int OutputTrackId(const G4Track *track)
     {
         const auto *info = GetPeriodicTrackInfo(track);
-        return info != nullptr ? info->OriginalTrackId() : track->GetTrackID();
+        return info != nullptr && info->OriginalTrackId() >= 0
+                   ? info->OriginalTrackId()
+                   : track->GetTrackID();
     }
 
     G4int OutputStepId(const G4Track *track)
@@ -63,6 +96,14 @@ namespace
         const auto *info = GetPeriodicTrackInfo(track);
         return (info != nullptr ? info->CompletedSteps() : 0) +
                track->GetCurrentStepNumber();
+    }
+
+    PeriodicCell CurrentCell(const G4Track *track)
+    {
+        const auto *info = GetPeriodicTrackInfo(track);
+        if (info == nullptr)
+            return {};
+        return {info->CellIx(), info->CellIy(), info->CellIz()};
     }
 
     G4bool IsTrackedHeavyParticle(const G4Track *track)
@@ -137,56 +178,139 @@ namespace
         return (phase == "outside");
     }
 
-    G4double PatchHalfZUm(const DetectorConstruction *det)
+    PeriodicCell ExitCellShift(const G4ThreeVector &position,
+                               const G4ThreeVector &direction,
+                               const DetectorConstruction *det)
     {
-        return det->GetBoxHalfZ() / um;
+        const G4ThreeVector wrapped =
+            det->WrapToPrimaryCellInside(position, direction);
+        const auto imageShift = [](G4double before,
+                                   G4double after,
+                                   G4double length)
+        {
+            if (length <= 0.0)
+                return 0;
+            return static_cast<G4int>(std::llround((before - after) / length));
+        };
+        PeriodicCell shift;
+        shift.ix = imageShift(position.x(), wrapped.x(), det->GetBoxXUm() * um);
+        shift.iy = imageShift(position.y(), wrapped.y(), det->GetBoxYUm() * um);
+        shift.iz = imageShift(position.z(), wrapped.z(), det->GetBoxZUm() * um);
+        return shift;
     }
 
-    std::string ExitFaceLabel(const G4ThreeVector &position, const DetectorConstruction *det)
+    std::string ExitFaceLabel(const PeriodicCell &shift)
     {
-        const G4double tolUm = 1.0e-3;
-        const G4double xUm = position.x() / um;
-        const G4double yUm = position.y() / um;
-        const G4double zUm = position.z() / um;
-        const G4double halfXUm = det->GetBoxHalfX() / um;
-        const G4double halfYUm = det->GetBoxHalfY() / um;
-        const G4double halfZUm = PatchHalfZUm(det);
-
-        if (zUm >= halfZUm - tolUm)
+        if (shift.iz > 0)
             return "+Z";
-        if (zUm <= -halfZUm + tolUm)
+        if (shift.iz < 0)
             return "-Z";
-        if (xUm >= halfXUm - tolUm)
+        if (shift.ix > 0)
             return "+X";
-        if (xUm <= -halfXUm + tolUm)
+        if (shift.ix < 0)
             return "-X";
-        if (yUm >= halfYUm - tolUm)
+        if (shift.iy > 0)
             return "+Y";
-        if (yUm <= -halfYUm + tolUm)
+        if (shift.iy < 0)
             return "-Y";
         return "unknown";
     }
 
     RunAction::BoundaryExitClass ClassifyBoundaryExit(
-        const std::string &surfaceMode,
-        const std::string &exitFace)
+        G4double screenThicknessUm,
+        G4double screenDepthPostUm,
+        const PeriodicCell &exitShift,
+        const DetectorConstruction *detector)
     {
-        if (surfaceMode == "front_surface" && exitFace == "+Z")
+        if (detector == nullptr || exitShift.iz == 0)
         {
-            return RunAction::BoundaryExitClass::PhysicalSurfaceExit;
+            return RunAction::BoundaryExitClass::UnexpectedArtificialExit;
         }
-        if (surfaceMode == "back_surface" && exitFace == "-Z")
+        const G4double surfaceToleranceUm = 1.0e-3;
+        if (screenDepthPostUm <= surfaceToleranceUm ||
+            screenDepthPostUm >= screenThicknessUm - surfaceToleranceUm)
         {
             return RunAction::BoundaryExitClass::PhysicalSurfaceExit;
         }
         return RunAction::BoundaryExitClass::UnexpectedArtificialExit;
     }
 
+    CoordinateFrame MakeCoordinateFrame(
+        const G4Track *track,
+        const DetectorConstruction *detector,
+        const RunAction::CaptureAnchorRow &anchor,
+        const G4ThreeVector &localPre,
+        const G4ThreeVector &localPost)
+    {
+        CoordinateFrame frame;
+        frame.cell = CurrentCell(track);
+        const G4ThreeVector cellOffset(
+            frame.cell.ix * detector->GetBoxXUm() * um,
+            frame.cell.iy * detector->GetBoxYUm() * um,
+            frame.cell.iz * detector->GetBoxZUm() * um);
+        frame.unwrappedPre = localPre + cellOffset;
+        frame.unwrappedPost = localPost + cellOffset;
+
+        const G4ThreeVector localCapture(
+            anchor.local_capture_x_um * um,
+            anchor.local_capture_y_um * um,
+            anchor.local_capture_z_um * um);
+        const G4double captureScreenZ =
+            (0.5 * anchor.thickness_um - anchor.depth_um) * um;
+        const G4ThreeVector screenCapture(
+            anchor.capture_x_um * um,
+            anchor.capture_y_um * um,
+            captureScreenZ);
+        frame.screenPre = screenCapture + frame.unwrappedPre - localCapture;
+        frame.screenPost = screenCapture + frame.unwrappedPost - localCapture;
+        frame.screenDepthPre =
+            anchor.depth_um * um - (frame.unwrappedPre.z() - localCapture.z());
+        frame.screenDepthPost =
+            anchor.depth_um * um - (frame.unwrappedPost.z() - localCapture.z());
+        return frame;
+    }
+
+    void AppendCoordinateFrame(std::ofstream &csv, const CoordinateFrame &frame)
+    {
+        csv << "," << frame.cell.ix
+            << "," << frame.cell.iy
+            << "," << frame.cell.iz
+            << "," << frame.unwrappedPre.x() / um
+            << "," << frame.unwrappedPre.y() / um
+            << "," << frame.unwrappedPre.z() / um
+            << "," << frame.unwrappedPost.x() / um
+            << "," << frame.unwrappedPost.y() / um
+            << "," << frame.unwrappedPost.z() / um
+            << "," << frame.screenPre.x() / um
+            << "," << frame.screenPre.y() / um
+            << "," << frame.screenPre.z() / um
+            << "," << frame.screenDepthPre / um
+            << "," << frame.screenPost.x() / um
+            << "," << frame.screenPost.y() / um
+            << "," << frame.screenPost.z() / um
+            << "," << frame.screenDepthPost / um;
+    }
+
+    void PropagateCellToSecondaries(const G4Step *step, const PeriodicCell &cell)
+    {
+        const auto *secondaries = step->GetSecondaryInCurrentStep();
+        if (secondaries == nullptr)
+            return;
+        for (const auto *secondary : *secondaries)
+        {
+            if (secondary == nullptr || secondary->GetUserInformation() != nullptr)
+                continue;
+            secondary->SetUserInformation(
+                new PeriodicTrackInfo(-1, 0, cell.ix, cell.iy, cell.iz));
+        }
+    }
+
     G4bool ContinueAcrossPeriodicBoundary(
         G4Track *track,
         const DetectorConstruction *detector,
         const G4ThreeVector &exitPosition,
-        const G4ThreeVector &direction)
+        const G4ThreeVector &direction,
+        const PeriodicCell &exitShift)
     {
         if (track == nullptr || detector == nullptr || direction.mag2() <= 0.0)
             return false;
@@ -198,24 +322,36 @@ namespace
         auto *dynamicParticle = new G4DynamicParticle(*track->GetDynamicParticle());
         dynamicParticle->SetMomentumDirection(direction.unit());
 
+        const G4double inwardEpsilon = 1.0e-4 * um;
+        const G4ThreeVector continuationPosition(
+            exitPosition.x() - exitShift.ix * detector->GetBoxXUm() * um +
+                exitShift.ix * inwardEpsilon,
+            exitPosition.y() - exitShift.iy * detector->GetBoxYUm() * um +
+                exitShift.iy * inwardEpsilon,
+            exitPosition.z() - exitShift.iz * detector->GetBoxZUm() * um +
+                exitShift.iz * inwardEpsilon);
         auto *continuationTrack = new G4Track(
             dynamicParticle,
             track->GetGlobalTime(),
-            detector->WrapToPrimaryCellInside(exitPosition, direction));
+            continuationPosition);
         const auto *previousInfo = GetPeriodicTrackInfo(track);
-        const G4int originalTrackId = previousInfo != nullptr
-                                          ? previousInfo->OriginalTrackId()
-                                          : track->GetTrackID();
+        const G4int originalTrackId = OutputTrackId(track);
         const G4int completedSteps =
             (previousInfo != nullptr ? previousInfo->CompletedSteps() : 0) +
             track->GetCurrentStepNumber();
+        const PeriodicCell previousCell = CurrentCell(track);
         continuationTrack->SetTrackID(originalTrackId);
         continuationTrack->SetParentID(track->GetParentID());
         continuationTrack->SetLocalTime(track->GetLocalTime());
         continuationTrack->SetProperTime(track->GetProperTime());
         continuationTrack->SetWeight(track->GetWeight());
         continuationTrack->SetUserInformation(
-            new PeriodicTrackInfo(originalTrackId, completedSteps));
+            new PeriodicTrackInfo(
+                originalTrackId,
+                completedSteps,
+                previousCell.ix + exitShift.ix,
+                previousCell.iy + exitShift.iy,
+                previousCell.iz + exitShift.iz));
         stackManager->PushOneTrack(continuationTrack);
         track->SetTrackStatus(fStopAndKill);
         return true;
@@ -247,9 +383,6 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
     if (!track)
         return;
 
-    if (!IsTrackedHeavyParticle(track))
-        return;
-
     const auto *prePoint = step->GetPreStepPoint();
     const auto *postPoint = step->GetPostStepPoint();
     if (!prePoint || !postPoint)
@@ -272,19 +405,28 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
     const G4double edep = step->GetTotalEnergyDeposit();
     const G4double ekinPre = prePoint->GetKineticEnergy();
     const G4double ekinPost = postPoint->GetKineticEnergy();
+    const G4bool isHeavyParticle = IsTrackedHeavyParticle(track);
+    const PeriodicCell currentCell = CurrentCell(track);
 
-    if (fEventAction)
+    PropagateCellToSecondaries(step, currentCell);
+
+    if (fEventAction && phasePre == "ZnS")
     {
         fEventAction->AddEdep(edep);
     }
 
     auto *runAction = fEventAction ? fEventAction->GetRunAction() : nullptr;
-    if (runAction && fPrimaryAction)
-    {
-        runAction->SwitchOutputCsvForInputPath(fPrimaryAction->GetCurrentRecordInputFile());
-    }
 
-    if (runAction && fPrimaryAction && runAction->IsFullMode() && runAction->IsFullStepCsvOpen())
+    const auto anchor = (fEventAction != nullptr)
+                            ? fEventAction->MakeCurrentCaptureAnchorRow()
+                            : RunAction::CaptureAnchorRow{};
+    const CoordinateFrame coordinateFrame = detector != nullptr
+                                                ? MakeCoordinateFrame(
+                                                      track, detector, anchor, xPre, xPost)
+                                                : CoordinateFrame{};
+
+    if (isHeavyParticle && runAction && fPrimaryAction &&
+        runAction->IsFullMode() && runAction->IsFullStepCsvOpen())
     {
         std::ofstream &csv = runAction->GetFullStepCsv();
 
@@ -340,15 +482,17 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
             << ekinPost / keV << ","
             << fPrimaryAction->MakeCurrentSourceEventUid() << ","
             << rec.record_index << ","
-            << fPrimaryAction->GetCurrentTrajectoryWeight()
-            << "\n";
+            << fPrimaryAction->GetCurrentTrajectoryWeight() << ","
+            << track->GetParentID();
+        AppendCoordinateFrame(csv, coordinateFrame);
+        csv << "\n";
     }
-    else if (runAction && fEventAction && runAction->IsSlimMode() &&
+    if (runAction && fEventAction &&
              runAction->IsSlimTrackCsvOpen() &&
-             phasePre == "ZnS" && stepLen > 0.0)
+             phasePre == "ZnS" &&
+             ((isHeavyParticle && stepLen > 0.0) || edep > 0.0))
     {
         std::ofstream &csv = runAction->GetSlimTrackCsv();
-        const auto anchor = fEventAction->MakeCurrentCaptureAnchorRow();
 
         csv
             << anchor.physical_event_uid << ","
@@ -372,27 +516,38 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
             << ekinPost / keV << ","
             << anchor.alphali_replay_index << ","
             << anchor.alphali_replay_count << ","
-            << anchor.trajectory_weight
-            << "\n";
+            << anchor.trajectory_weight << ","
+            << track->GetParentID();
+        AppendCoordinateFrame(csv, coordinateFrame);
+        csv << "\n";
     }
 
     // Preserve true screen-surface exits; wrap artificial RVE faces exactly.
     if (!IsOutsidePhase(phasePre) && IsOutsidePhase(phasePost))
     {
-        const auto anchor = (fEventAction != nullptr)
-                                ? fEventAction->MakeCurrentCaptureAnchorRow()
-                                : RunAction::CaptureAnchorRow{};
-        const std::string exitFace = detector != nullptr
-                                         ? ExitFaceLabel(xPost, detector)
-                                         : "unknown";
-        const auto exitClass = ClassifyBoundaryExit(anchor.surface_mode, exitFace);
+        const PeriodicCell exitShift = detector != nullptr
+                                           ? ExitCellShift(
+                                                 xPost,
+                                                 prePoint->GetMomentumDirection(),
+                                                 detector)
+                                           : PeriodicCell{};
+        const std::string exitFace = ExitFaceLabel(exitShift);
+        const auto exitClass = ClassifyBoundaryExit(
+            anchor.thickness_um,
+            coordinateFrame.screenDepthPost / um,
+            exitShift,
+            detector);
         const G4bool isPhysicalSurface =
             exitClass == RunAction::BoundaryExitClass::PhysicalSurfaceExit;
 
         if (!isPhysicalSurface && detector != nullptr &&
             detector->UsesPeriodicTransport() &&
             ContinueAcrossPeriodicBoundary(
-                track, detector, xPost, prePoint->GetMomentumDirection()))
+                track,
+                detector,
+                xPost,
+                postPoint->GetMomentumDirection(),
+                exitShift))
         {
             return;
         }

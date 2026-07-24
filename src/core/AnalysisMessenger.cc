@@ -112,14 +112,8 @@ namespace
       return "particle_encounter_no_threshold";
     if (value == "angle_threshold" ||
         value == "particle_encounter_angle_threshold" ||
-        value == "particleencounteranglethreshold" ||
-        value == "step_angle_threshold" ||
-        value == "stepanglethreshold")
+        value == "particleencounteranglethreshold")
       return "particle_encounter_angle_threshold";
-    if (value == "boundary_deflection" || value == "boundarydeflection")
-      return "boundary_deflection";
-    if (value == "particle_exit_deflection" || value == "particleexitdeflection")
-      return "particle_exit_deflection";
     return "";
   }
 
@@ -189,6 +183,9 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
       fStageDMaxStepsCmd(nullptr),
       fStageDMaxPathLengthUmCmd(nullptr),
       fStageDOutputDirCmd(nullptr),
+      fStageDWriteReentryDiagnosticsCmd(nullptr),
+      fStageDReentryDiagnosticsSamplingRateCmd(nullptr),
+      fStageDMaxDiagnosticRowsCmd(nullptr),
       fOpticalParamsCmd(nullptr),
       fWeightRatioCmd(nullptr)
 {
@@ -273,7 +270,7 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fStageDScatterMetricCmd = new G4UIcmdWithAString("/cfg/stageD/setScatterMetric", this);
   fStageDScatterMetricCmd->SetGuidance(
       "Set Stage D primary scatter metric: particle_encounter_angle_threshold | angle_threshold | "
-      "particle_encounter_no_threshold. Legacy/debug labels: boundary_deflection | particle_exit_deflection.");
+      "particle_encounter_no_threshold.");
   fStageDScatterMetricCmd->SetParameterName("scatterMetric", false);
   fStageDScatterMetricCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
@@ -352,6 +349,30 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fStageDMaxPortalFallbackLevelCmd->SetRange("maxPortalFallbackLevel>=0");
   fStageDMaxPortalFallbackLevelCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
+  fStageDWriteReentryDiagnosticsCmd =
+      new G4UIcmdWithABool("/cfg/stageD/setWriteReentryDiagnostics", this);
+  fStageDWriteReentryDiagnosticsCmd->SetGuidance(
+      "Enable Stage D per-reentry diagnostic CSV output.");
+  fStageDWriteReentryDiagnosticsCmd->SetParameterName("enabled", false);
+  fStageDWriteReentryDiagnosticsCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
+  fStageDReentryDiagnosticsSamplingRateCmd =
+      new G4UIcmdWithADouble("/cfg/stageD/setReentryDiagnosticsSamplingRate", this);
+  fStageDReentryDiagnosticsSamplingRateCmd->SetGuidance(
+      "Set deterministic Stage D re-entry diagnostic sampling rate in [0,1].");
+  fStageDReentryDiagnosticsSamplingRateCmd->SetParameterName("samplingRate", false);
+  fStageDReentryDiagnosticsSamplingRateCmd->SetRange(
+      "samplingRate>=0. && samplingRate<=1.");
+  fStageDReentryDiagnosticsSamplingRateCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
+  fStageDMaxDiagnosticRowsCmd =
+      new G4UIcmdWithAnInteger("/cfg/stageD/setMaxDiagnosticRows", this);
+  fStageDMaxDiagnosticRowsCmd->SetGuidance(
+      "Set maximum Stage D re-entry diagnostic rows; 0 disables row output.");
+  fStageDMaxDiagnosticRowsCmd->SetParameterName("maxRows", false);
+  fStageDMaxDiagnosticRowsCmd->SetRange("maxRows>=0");
+  fStageDMaxDiagnosticRowsCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
   fOpticalParamsCmd = new G4UIcommand("/cfg/setOpticalParams", this);
   fOpticalParamsCmd->SetGuidance("Set optical material parameters used by Stage D.");
   fOpticalParamsCmd->SetGuidance("Usage: /cfg/setOpticalParams <matrix_n> <matrix_abs_um> <bn_n> <bn_abs_um> <zns_n> <zns_abs_um>");
@@ -389,6 +410,9 @@ AnalysisMessenger::~AnalysisMessenger()
 {
   delete fWeightRatioCmd;
   delete fOpticalParamsCmd;
+  delete fStageDMaxDiagnosticRowsCmd;
+  delete fStageDReentryDiagnosticsSamplingRateCmd;
+  delete fStageDWriteReentryDiagnosticsCmd;
   delete fStageDOutputDirCmd;
   delete fStageDMaxPortalFallbackLevelCmd;
   delete fStageDMaxParticleReentryTrialsCmd;
@@ -634,7 +658,7 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
     {
       G4Exception("AnalysisMessenger::SetNewValue",
                   "BNZS_CFG_013", FatalException,
-                  "Stage D scatterMetric must be particle_encounter_angle_threshold (or angle_threshold), particle_encounter_no_threshold, boundary_deflection, or particle_exit_deflection.");
+                  "Stage D scatterMetric must be particle_encounter_angle_threshold (or angle_threshold) or particle_encounter_no_threshold.");
       return;
     }
     fConfig->stageD_scatter_metric = normalized;
@@ -758,6 +782,33 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
         fStageDMaxPortalFallbackLevelCmd->GetNewIntValue(newValue);
     G4cout << "[AnalysisMessenger] stageD_max_portal_fallback_level set to "
            << fConfig->stageD_max_portal_fallback_level
+           << G4endl;
+    return;
+  }
+  if (command == fStageDWriteReentryDiagnosticsCmd)
+  {
+    fConfig->stageD_write_reentry_diagnostics =
+        fStageDWriteReentryDiagnosticsCmd->GetNewBoolValue(newValue);
+    G4cout << "[AnalysisMessenger] stageD_write_reentry_diagnostics set to "
+           << (fConfig->stageD_write_reentry_diagnostics ? "true" : "false")
+           << G4endl;
+    return;
+  }
+  if (command == fStageDReentryDiagnosticsSamplingRateCmd)
+  {
+    fConfig->stageD_reentry_diagnostics_sampling_rate =
+        fStageDReentryDiagnosticsSamplingRateCmd->GetNewDoubleValue(newValue);
+    G4cout << "[AnalysisMessenger] stageD_reentry_diagnostics_sampling_rate set to "
+           << fConfig->stageD_reentry_diagnostics_sampling_rate
+           << G4endl;
+    return;
+  }
+  if (command == fStageDMaxDiagnosticRowsCmd)
+  {
+    fConfig->stageD_max_diagnostic_rows =
+        fStageDMaxDiagnosticRowsCmd->GetNewIntValue(newValue);
+    G4cout << "[AnalysisMessenger] stageD_max_diagnostic_rows set to "
+           << fConfig->stageD_max_diagnostic_rows
            << G4endl;
     return;
   }

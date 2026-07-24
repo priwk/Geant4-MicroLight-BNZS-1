@@ -79,6 +79,7 @@ void ModeRunAction::BeginOfRunAction(const G4Run *run)
         if (fStageBPrimaryAction != nullptr)
         {
             fStageBPrimaryAction->RefreshInputSelectionFromConfig();
+            fStageBPrimaryAction->ValidateDetectorAgainstInput();
         }
         fStageBRunAction->BeginOfRunAction(run);
         return;

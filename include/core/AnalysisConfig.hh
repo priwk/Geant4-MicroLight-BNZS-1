@@ -75,6 +75,9 @@ public:
   double stageD_clearance_bin2_um;
   int stageD_max_particle_reentry_trials;
   int stageD_max_portal_fallback_level;
+  bool stageD_write_reentry_diagnostics;
+  double stageD_reentry_diagnostics_sampling_rate;
+  int stageD_max_diagnostic_rows;
 
   // ---- Stage B 深度映射兼容开关 ----
   // true: 允许 thickness_um == local patch thickness

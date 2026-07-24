@@ -73,15 +73,9 @@ namespace
       return "particle_encounter_no_threshold";
     if (value == "angle_threshold" ||
         value == "particle_encounter_angle_threshold" ||
-        value == "particleencounteranglethreshold" ||
-        value == "step_angle_threshold" ||
-        value == "stepanglethreshold")
+        value == "particleencounteranglethreshold")
       return "particle_encounter_angle_threshold";
-    if (value == "boundary_deflection" || value == "boundarydeflection")
-      return "boundary_deflection";
-    if (value == "particle_exit_deflection" || value == "particleexitdeflection")
-      return "particle_exit_deflection";
-    return raw;
+    return "";
   }
 
   bool TryParseRatioFolderName(const std::string &name, double &bnWt, double &znsWt)
@@ -193,6 +187,9 @@ AnalysisConfig::AnalysisConfig()
       stageD_clearance_bin2_um(0.50),
       stageD_max_particle_reentry_trials(64),
       stageD_max_portal_fallback_level(4),
+      stageD_write_reentry_diagnostics(false),
+      stageD_reentry_diagnostics_sampling_rate(1.0),
+      stageD_max_diagnostic_rows(100000),
       allowThicknessEqualLocalPatch(true)
 {
   const char *runModeEnv = std::getenv("BNZS_RUN_MODE");
@@ -318,6 +315,41 @@ AnalysisConfig::AnalysisConfig()
   readPositiveIntEnv("BNZS_STAGED_MAX_PARTICLE_REENTRY_TRIALS", stageD_max_particle_reentry_trials);
   readPositiveIntEnv("BNZS_STAGED_MAX_PORTAL_FALLBACK_LEVEL", stageD_max_portal_fallback_level);
 
+  const char *writeReentryDiagnosticsEnv =
+      std::getenv("BNZS_STAGED_WRITE_REENTRY_DIAGNOSTICS");
+  if (writeReentryDiagnosticsEnv != nullptr)
+    stageD_write_reentry_diagnostics = IsTruthyEnv(writeReentryDiagnosticsEnv);
+
+  const char *reentryDiagnosticsSamplingRateEnv =
+      std::getenv("BNZS_STAGED_REENTRY_DIAGNOSTICS_SAMPLING_RATE");
+  if (reentryDiagnosticsSamplingRateEnv != nullptr)
+  {
+    try
+    {
+      const double value = std::stod(reentryDiagnosticsSamplingRateEnv);
+      if (value >= 0.0 && value <= 1.0)
+        stageD_reentry_diagnostics_sampling_rate = value;
+    }
+    catch (...)
+    {
+    }
+  }
+
+  const char *maxDiagnosticRowsEnv =
+      std::getenv("BNZS_STAGED_MAX_DIAGNOSTIC_ROWS");
+  if (maxDiagnosticRowsEnv != nullptr)
+  {
+    try
+    {
+      const int value = std::stoi(maxDiagnosticRowsEnv);
+      if (value >= 0)
+        stageD_max_diagnostic_rows = value;
+    }
+    catch (...)
+    {
+    }
+  }
+
   const char *stageDSourceModeEnv = std::getenv("BNZS_STAGED_SOURCE_MODE");
   if (stageDSourceModeEnv != nullptr && std::string(stageDSourceModeEnv).size() > 0)
     stageD_source_mode = stageDSourceModeEnv;
@@ -340,7 +372,11 @@ AnalysisConfig::AnalysisConfig()
 
   const char *stageDScatterMetricEnv = std::getenv("BNZS_STAGED_SCATTER_METRIC");
   if (stageDScatterMetricEnv != nullptr && std::string(stageDScatterMetricEnv).size() > 0)
-    stageD_scatter_metric = NormalizeStageDScatterMetric(stageDScatterMetricEnv);
+  {
+    const std::string normalized = NormalizeStageDScatterMetric(stageDScatterMetricEnv);
+    if (!normalized.empty())
+      stageD_scatter_metric = normalized;
+  }
 
   const char *stageDOutputDirEnv = std::getenv("BNZS_STAGED_OUTPUT_DIR");
   if (stageDOutputDirEnv != nullptr && std::string(stageDOutputDirEnv).size() > 0)

@@ -356,6 +356,25 @@ def macro_points_from_row(
     start: tuple[float, float, float],
     end: tuple[float, float, float],
 ) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
+    explicit_fields = {
+        "screen_x_pre_um",
+        "screen_y_pre_um",
+        "screen_depth_pre_um",
+        "screen_x_post_um",
+        "screen_y_post_um",
+        "screen_depth_post_um",
+    }
+    if explicit_fields.issubset(row.keys()):
+        return (
+            safe_float(row.get("screen_x_pre_um")),
+            safe_float(row.get("screen_y_pre_um")),
+            safe_float(row.get("screen_depth_pre_um")),
+        ), (
+            safe_float(row.get("screen_x_post_um")),
+            safe_float(row.get("screen_y_post_um")),
+            safe_float(row.get("screen_depth_post_um")),
+        )
+
     if not has_macro_anchor(row):
         return None, None
 
@@ -376,7 +395,7 @@ def macro_points_from_row(
         return (
             capture[0] + point[0] - local_capture[0],
             capture[1] + point[1] - local_capture[1],
-            capture[2] + point[2] - local_capture[2],
+            capture[2] - (point[2] - local_capture[2]),
         )
 
     return to_macro(start), to_macro(end)
@@ -453,15 +472,27 @@ def discover_track_files(
 
 
 def read_step(row: dict[str, str], ratio: RatioKey, thickness_um: float) -> TrackStep:
+    has_unwrapped = all(
+        name in row
+        for name in {
+            "unwrapped_x_pre_um",
+            "unwrapped_y_pre_um",
+            "unwrapped_z_pre_um",
+            "unwrapped_x_post_um",
+            "unwrapped_y_post_um",
+            "unwrapped_z_post_um",
+        }
+    )
+    prefix = "unwrapped_" if has_unwrapped else ""
     start = (
-        safe_float(row.get("x_pre_um")),
-        safe_float(row.get("y_pre_um")),
-        safe_float(row.get("z_pre_um")),
+        safe_float(row.get(f"{prefix}x_pre_um")),
+        safe_float(row.get(f"{prefix}y_pre_um")),
+        safe_float(row.get(f"{prefix}z_pre_um")),
     )
     end = (
-        safe_float(row.get("x_post_um")),
-        safe_float(row.get("y_post_um")),
-        safe_float(row.get("z_post_um")),
+        safe_float(row.get(f"{prefix}x_post_um")),
+        safe_float(row.get(f"{prefix}y_post_um")),
+        safe_float(row.get(f"{prefix}z_post_um")),
     )
     macro_start, macro_end = macro_points_from_row(row, start, end)
     return TrackStep(
@@ -538,6 +569,8 @@ def collect_summary(
                 if (rows_scanned - 1) % summary_stride != 0:
                     continue
                 particle = row["particle"].strip()
+                if particle not in PARTICLE_COLORS:
+                    continue
                 source_uid = row["source_event_uid"].strip()
                 step_len = safe_float(row.get("step_len_um"))
                 edep = safe_float(row.get("edep_keV"))
@@ -772,6 +805,8 @@ def collect_showcase_trajectories(
                 break
             source_uid = row["source_event_uid"].strip()
             particle = row["particle"].strip()
+            if particle not in PARTICLE_COLORS:
+                continue
             track_id = row.get("trackID", "").strip()
             trajectory_key = f"{source_uid}|{particle}|{track_id}"
             traj = active.get(trajectory_key)

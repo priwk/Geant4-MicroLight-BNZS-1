@@ -175,6 +175,7 @@ private:
   std::ofstream fUnexpectedBoundaryExitCsv;
   std::string fUnexpectedBoundaryExitCsvPath;
   std::string fBoundaryStopSummaryCsvPath;
+  std::string fCurrentOutputInputPath;
   std::map<BoundarySummaryKey, BoundarySummary> fBoundarySummaries;
 };
 

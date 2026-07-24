@@ -10,6 +10,7 @@
 #include "G4ios.hh"
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
@@ -58,6 +59,26 @@ namespace
                ? "particle_encounter_angle_threshold"
                : config->stageD_scatter_metric;
   }
+
+  G4bool KeepReentryDiagnostic(const StageDReentryDiagnosticRecord &record,
+                               G4double samplingRate)
+  {
+    if (samplingRate <= 0.0)
+      return false;
+    if (samplingRate >= 1.0)
+      return true;
+
+    std::uint64_t value =
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(record.event_id)) << 32) ^
+        static_cast<std::uint32_t>(record.reentry_index);
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    value ^= value >> 31;
+    const G4double unitValue =
+        static_cast<G4double>(value >> 11) * (1.0 / 9007199254740992.0);
+    return unitValue < samplingRate;
+  }
 }
 
 StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
@@ -73,8 +94,9 @@ StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
       fRatioTag(""),
       fPlacementFile(""),
       fPlacementStem(""),
-      fEvents(),
-      fReentryPortalSummary()
+      fAccumulator(),
+      fReentryPortalSummary(),
+      fReentryDiagnosticRowsWritten(0)
 {
 }
 
@@ -246,6 +268,10 @@ void StageDOpticalRunAction::WriteEventHeader()
       << "num_outer_boundary_hits,"
       << "num_outer_boundary_reentry_success,"
       << "num_outer_boundary_reentry_failed,"
+      << "num_outer_boundary_escape,"
+      << "num_outer_boundary_max_reentry_stop,"
+      << "num_outer_boundary_reentry_algorithm_failed,"
+      << "num_outer_boundary_periodic_phase_mismatch,"
       << "num_outer_boundary_fresnel_reflection,"
       << "num_outer_boundary_total_internal_reflection,"
       << "num_outer_boundary_refraction,"
@@ -346,17 +372,22 @@ void StageDOpticalRunAction::OpenOutputs()
     return;
   }
 
-  fReentryDiagnosticsCsv.open(fReentryDiagnosticsCsvPath.c_str(), std::ios::out);
-  if (!fReentryDiagnosticsCsv)
+  if (fConfig != nullptr && fConfig->stageD_write_reentry_diagnostics &&
+      fConfig->stageD_max_diagnostic_rows > 0 &&
+      fConfig->stageD_reentry_diagnostics_sampling_rate > 0.0)
   {
-    G4Exception("StageDOpticalRunAction::OpenOutputs",
-                "BNZS_D_RUN_005", FatalException,
-                ("Failed to open Stage D re-entry diagnostics CSV: " + fReentryDiagnosticsCsvPath).c_str());
-    return;
+    fReentryDiagnosticsCsv.open(fReentryDiagnosticsCsvPath.c_str(), std::ios::out);
+    if (!fReentryDiagnosticsCsv)
+    {
+      G4Exception("StageDOpticalRunAction::OpenOutputs",
+                  "BNZS_D_RUN_005", FatalException,
+                  ("Failed to open Stage D re-entry diagnostics CSV: " + fReentryDiagnosticsCsvPath).c_str());
+      return;
+    }
+    WriteReentryDiagnosticsHeader();
   }
 
   WriteEventHeader();
-  WriteReentryDiagnosticsHeader();
 }
 
 void StageDOpticalRunAction::WriteGeometryMetadataFile(
@@ -397,8 +428,9 @@ void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
 {
   (void)run;
 
-  fEvents.clear();
+  fAccumulator = StageDRunAccumulator{};
   fReentryPortalSummary = StageDReentryPortalSummary{};
+  fReentryDiagnosticRowsWritten = 0;
   if (fEventsCsv.is_open())
     fEventsCsv.close();
   if (fReentryDiagnosticsCsv.is_open())
@@ -417,7 +449,7 @@ void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
 
 void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &event)
 {
-  fEvents.push_back(event);
+  AccumulatePhotonEvent(event);
 
   if (!fEventsCsv.is_open())
     return;
@@ -500,6 +532,10 @@ void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &ev
       << event.num_outer_boundary_hits << ","
       << event.num_outer_boundary_reentry_success << ","
       << event.num_outer_boundary_reentry_failed << ","
+      << event.num_outer_boundary_escape << ","
+      << event.num_outer_boundary_max_reentry_stop << ","
+      << event.num_outer_boundary_reentry_algorithm_failed << ","
+      << event.num_outer_boundary_periodic_phase_mismatch << ","
       << event.num_outer_boundary_fresnel_reflection << ","
       << event.num_outer_boundary_total_internal_reflection << ","
       << event.num_outer_boundary_refraction << ","
@@ -534,10 +570,142 @@ void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &ev
       << "\n";
 }
 
+void StageDOpticalRunAction::AccumulatePhotonEvent(
+    const StageDPhotonEventRecord &event)
+{
+  auto &acc = fAccumulator;
+  ++acc.nPhotons;
+  if (event.absorbed)
+    ++acc.nAbsorbed;
+  acc.nAbsorbedBN += event.num_absorbed_BN;
+  acc.nAbsorbedZnS += event.num_absorbed_ZnS;
+  acc.nAbsorbedMatrix += event.num_absorbed_Matrix;
+
+  if (event.final_status == "lost")
+    ++acc.nLost;
+  else if (event.final_status == "reentry_failed")
+    ++acc.nReentryFailed;
+  else if (event.final_status == "escaped_debug")
+    ++acc.nEscapedDebug;
+  else if (event.final_status == "periodic_phase_mismatch")
+  {
+    ++acc.nPeriodicPhaseMismatch;
+    ++acc.nReentryFailed;
+  }
+  else if (event.final_status == "periodic_geometry_required")
+  {
+    ++acc.nPeriodicGeometryRequired;
+    ++acc.nReentryFailed;
+  }
+  else if (event.final_status == "detected")
+    ++acc.nDetected;
+  else if (event.final_status == "max_reentry")
+    ++acc.nMaxReentry;
+  else if (event.final_status == "max_steps")
+    ++acc.nMaxSteps;
+  else if (event.final_status == "max_path_length")
+    ++acc.nMaxPathLength;
+  else if (event.final_status == "target_primary_scatter")
+    ++acc.nTargetPrimaryScatter;
+
+  acc.totalPathLengthUm += event.total_path_length_um;
+  acc.totalPathLengthBNUm += event.path_length_bn_um;
+  acc.totalPathLengthZnSUm += event.path_length_zns_um;
+  acc.totalPathLengthMatrixUm += event.path_length_matrix_um;
+  acc.totalPathLengthWorldUm += event.path_length_world_um;
+  acc.totalEncounter += event.num_encounter_total;
+  acc.totalEncounterBN += event.num_encounter_BN;
+  acc.totalEncounterZnS += event.num_encounter_ZnS;
+  acc.totalEncounterEffective += event.num_encounter_effective_total;
+  acc.totalEncounterEffectiveBN += event.num_encounter_effective_BN;
+  acc.totalEncounterEffectiveZnS += event.num_encounter_effective_ZnS;
+  acc.sumCosThetaEncounter += event.sum_cos_theta_encounter;
+  acc.sumCosThetaEncounterBN += event.sum_cos_theta_encounter_BN;
+  acc.sumCosThetaEncounterZnS += event.sum_cos_theta_encounter_ZnS;
+  acc.sumCosThetaEncounterEffective += event.sum_cos_theta_encounter_effective;
+  acc.sumCosThetaEncounterEffectiveBN += event.sum_cos_theta_encounter_effective_BN;
+  acc.sumCosThetaEncounterEffectiveZnS += event.sum_cos_theta_encounter_effective_ZnS;
+  acc.sumOneMinusCosThetaEncounter += event.sum_one_minus_cos_theta_encounter;
+  acc.sumOneMinusCosThetaEncounterBN += event.sum_one_minus_cos_theta_encounter_BN;
+  acc.sumOneMinusCosThetaEncounterZnS += event.sum_one_minus_cos_theta_encounter_ZnS;
+  acc.sumOneMinusCosThetaEncounterEffective += event.sum_one_minus_cos_theta_encounter_effective;
+  acc.sumOneMinusCosThetaEncounterEffectiveBN += event.sum_one_minus_cos_theta_encounter_effective_BN;
+  acc.sumOneMinusCosThetaEncounterEffectiveZnS += event.sum_one_minus_cos_theta_encounter_effective_ZnS;
+  acc.sumCos2ThetaEncounter += event.sum_cos2_theta_encounter;
+  acc.sumCos2ThetaEncounterBN += event.sum_cos2_theta_encounter_BN;
+  acc.sumCos2ThetaEncounterZnS += event.sum_cos2_theta_encounter_ZnS;
+  acc.sumCos2ThetaEncounterEffective += event.sum_cos2_theta_encounter_effective;
+  acc.sumCos2ThetaEncounterEffectiveBN += event.sum_cos2_theta_encounter_effective_BN;
+  acc.sumCos2ThetaEncounterEffectiveZnS += event.sum_cos2_theta_encounter_effective_ZnS;
+  for (std::size_t i = 0; i < acc.phaseFunctionCounts.size(); ++i)
+    acc.phaseFunctionCounts[i] += event.phase_function_histogram[i];
+
+  acc.totalParticleScatter += event.num_particle_scatter;
+  acc.totalParticleScatterBN += event.num_particle_scatter_BN;
+  acc.totalParticleScatterZnS += event.num_particle_scatter_ZnS;
+  acc.totalRealScatter += event.num_real_scatter;
+  acc.totalBulkScatter += event.num_bulk_scatter;
+  acc.totalBoundaryScatter += event.num_boundary_scatter;
+  acc.totalBoundaryScatterBN += event.num_boundary_scatter_BN;
+  acc.totalBoundaryScatterZnS += event.num_boundary_scatter_ZnS;
+  acc.totalMaterialBoundary += event.num_material_boundary;
+  acc.totalCompleteEncounter += event.num_complete_encounter_total;
+  acc.totalCompleteEncounterBN += event.num_complete_encounter_BN;
+  acc.totalCompleteEncounterZnS += event.num_complete_encounter_ZnS;
+  acc.totalSurfaceReflectionEncounter += event.num_surface_reflection_encounter;
+  acc.totalIncompleteInitialParticleExit += event.num_incomplete_initial_particle_exit;
+  acc.totalCensoredParticleEncounter += event.num_censored_particle_encounter;
+  acc.totalInconsistentEncounterState += event.num_inconsistent_encounter_state;
+  acc.totalParticleToParticleBoundary += event.num_particle_to_particle_boundary;
+  acc.totalUnknownParticleReflection += event.num_unknown_particle_reflection;
+  acc.totalOuterBoundaryHits += event.num_outer_boundary_hits;
+  acc.totalOuterBoundaryReentrySuccess += event.num_outer_boundary_reentry_success;
+  acc.totalOuterBoundaryReentryFailed += event.num_outer_boundary_reentry_failed;
+  acc.totalOuterBoundaryEscape += event.num_outer_boundary_escape;
+  acc.totalOuterBoundaryMaxReentryStop += event.num_outer_boundary_max_reentry_stop;
+  acc.totalOuterBoundaryReentryAlgorithmFailed +=
+      event.num_outer_boundary_reentry_algorithm_failed;
+  acc.totalOuterBoundaryPeriodicPhaseMismatch +=
+      event.num_outer_boundary_periodic_phase_mismatch;
+  acc.totalOuterBoundaryFresnelReflection += event.num_outer_boundary_fresnel_reflection;
+  acc.totalOuterBoundaryTotalInternalReflection +=
+      event.num_outer_boundary_total_internal_reflection;
+  acc.totalOuterBoundaryRefraction += event.num_outer_boundary_refraction;
+  acc.totalOuterBoundaryTransmission += event.num_outer_boundary_transmission;
+  acc.totalOuterBoundaryOtherStatus += event.num_outer_boundary_other_status;
+  acc.totalReentry += event.num_reentry;
+  acc.totalReentryBN += event.num_reentry_BN;
+  acc.totalReentryZnS += event.num_reentry_ZnS;
+  acc.totalReentryMatrix += event.num_reentry_matrix;
+  acc.totalReentryParticleQMu += event.num_reentry_particle_q_mu;
+  acc.totalReentryMatrixClearancePortal += event.num_reentry_matrix_clearance_portal;
+  acc.totalReentryFallbackSameBin += event.num_reentry_fallback_same_bin;
+  acc.totalReentryFallbackAdjacentBin += event.num_reentry_fallback_adjacent_bin;
+  acc.totalReentryFallbackAnyBin += event.num_reentry_fallback_any_bin;
+  acc.totalReentryFallbackAnyPhaseSameBin +=
+      event.num_reentry_fallback_any_phase_same_bin;
+  acc.totalReentryFallbackAnyPortal += event.num_reentry_fallback_any_portal;
+  acc.totalReentryRandomMatrixDebug += event.num_reentry_random_matrix_debug;
+  acc.totalReentryFailed += event.num_reentry_failed;
+  acc.sumCosThetaParticleScatter += event.sum_cos_theta_particle;
+  acc.sumCosThetaParticleScatterBN += event.sum_cos_theta_particle_BN;
+  acc.sumCosThetaParticleScatterZnS += event.sum_cos_theta_particle_ZnS;
+  acc.sumCosThetaAllScatter += event.sum_cos_theta;
+  acc.sumCosThetaBulkScatter += event.sum_cos_theta_bulk;
+  acc.sumCosThetaBoundaryScatter += event.sum_cos_theta_boundary;
+  acc.sumCosThetaBoundaryScatterBN += event.sum_cos_theta_boundary_BN;
+  acc.sumCosThetaBoundaryScatterZnS += event.sum_cos_theta_boundary_ZnS;
+}
+
 void StageDOpticalRunAction::RecordReentryDiagnostic(
     const StageDReentryDiagnosticRecord &record)
 {
-  if (!fReentryDiagnosticsCsv.is_open())
+  if (!fReentryDiagnosticsCsv.is_open() || fConfig == nullptr ||
+      !fConfig->stageD_write_reentry_diagnostics ||
+      fConfig->stageD_max_diagnostic_rows <= 0 ||
+      fReentryDiagnosticRowsWritten >= fConfig->stageD_max_diagnostic_rows ||
+      !KeepReentryDiagnostic(
+          record, fConfig->stageD_reentry_diagnostics_sampling_rate))
     return;
 
   fReentryDiagnosticsCsv
@@ -568,6 +736,7 @@ void StageDOpticalRunAction::RecordReentryDiagnostic(
       << record.matrix_clearance_bin_entry << ","
       << record.trials
       << "\n";
+  ++fReentryDiagnosticRowsWritten;
 }
 
 void StageDOpticalRunAction::SetReentryPortalSummary(
@@ -587,196 +756,112 @@ void StageDOpticalRunAction::WriteSummaryFile() const
     return;
   }
 
-  G4long nPhotons = static_cast<G4long>(fEvents.size());
-  G4long nAbsorbed = 0;
-  G4long nAbsorbedBN = 0;
-  G4long nAbsorbedZnS = 0;
-  G4long nAbsorbedMatrix = 0;
-  G4long nLost = 0;
-  G4long nReentryFailed = 0;
-  G4long nMaxReentry = 0;
-  G4long nMaxSteps = 0;
-  G4long nMaxPathLength = 0;
-  G4long nTargetPrimaryScatter = 0;
-  G4double totalPathLengthUm = 0.0;
-  G4double totalPathLengthBNUm = 0.0;
-  G4double totalPathLengthZnSUm = 0.0;
-  G4double totalPathLengthMatrixUm = 0.0;
-  G4double totalPathLengthWorldUm = 0.0;
-  G4long totalEncounter = 0;
-  G4long totalEncounterBN = 0;
-  G4long totalEncounterZnS = 0;
-  G4long totalEncounterEffective = 0;
-  G4long totalEncounterEffectiveBN = 0;
-  G4long totalEncounterEffectiveZnS = 0;
-  G4double sumCosThetaEncounter = 0.0;
-  G4double sumCosThetaEncounterBN = 0.0;
-  G4double sumCosThetaEncounterZnS = 0.0;
-  G4double sumCosThetaEncounterEffective = 0.0;
-  G4double sumCosThetaEncounterEffectiveBN = 0.0;
-  G4double sumCosThetaEncounterEffectiveZnS = 0.0;
-  G4double sumOneMinusCosThetaEncounter = 0.0;
-  G4double sumOneMinusCosThetaEncounterBN = 0.0;
-  G4double sumOneMinusCosThetaEncounterZnS = 0.0;
-  G4double sumOneMinusCosThetaEncounterEffective = 0.0;
-  G4double sumOneMinusCosThetaEncounterEffectiveBN = 0.0;
-  G4double sumOneMinusCosThetaEncounterEffectiveZnS = 0.0;
-  G4double sumCos2ThetaEncounter = 0.0;
-  G4double sumCos2ThetaEncounterBN = 0.0;
-  G4double sumCos2ThetaEncounterZnS = 0.0;
-  G4double sumCos2ThetaEncounterEffective = 0.0;
-  G4double sumCos2ThetaEncounterEffectiveBN = 0.0;
-  G4double sumCos2ThetaEncounterEffectiveZnS = 0.0;
-  std::array<G4long, StageDPhotonEventRecord::kPhaseFunctionBins> phaseFunctionCounts{};
-  G4long totalParticleScatter = 0;
-  G4long totalParticleScatterBN = 0;
-  G4long totalParticleScatterZnS = 0;
-  G4long totalRealScatter = 0;
-  G4long totalBulkScatter = 0;
-  G4long totalBoundaryScatter = 0;
-  G4long totalBoundaryScatterBN = 0;
-  G4long totalBoundaryScatterZnS = 0;
-  G4long totalMaterialBoundary = 0;
-  G4long totalCompleteEncounter = 0;
-  G4long totalCompleteEncounterBN = 0;
-  G4long totalCompleteEncounterZnS = 0;
-  G4long totalSurfaceReflectionEncounter = 0;
-  G4long totalIncompleteInitialParticleExit = 0;
-  G4long totalCensoredParticleEncounter = 0;
-  G4long totalInconsistentEncounterState = 0;
-  G4long totalParticleToParticleBoundary = 0;
-  G4long totalUnknownParticleReflection = 0;
-  G4long totalOuterBoundaryHits = 0;
-  G4long totalOuterBoundaryReentrySuccess = 0;
-  G4long totalOuterBoundaryReentryFailed = 0;
-  G4long totalOuterBoundaryFresnelReflection = 0;
-  G4long totalOuterBoundaryTotalInternalReflection = 0;
-  G4long totalOuterBoundaryRefraction = 0;
-  G4long totalOuterBoundaryTransmission = 0;
-  G4long totalOuterBoundaryOtherStatus = 0;
-  G4long totalReentry = 0;
-  G4long totalReentryBN = 0;
-  G4long totalReentryZnS = 0;
-  G4long totalReentryMatrix = 0;
-  G4long totalReentryParticleQMu = 0;
-  G4long totalReentryMatrixClearancePortal = 0;
-  G4long totalReentryFallbackSameBin = 0;
-  G4long totalReentryFallbackAdjacentBin = 0;
-  G4long totalReentryFallbackAnyBin = 0;
-  G4long totalReentryFallbackAnyPhaseSameBin = 0;
-  G4long totalReentryFallbackAnyPortal = 0;
-  G4long totalReentryRandomMatrixDebug = 0;
-  G4long totalReentryFailed = 0;
-  G4double sumCosThetaParticleScatter = 0.0;
-  G4double sumCosThetaParticleScatterBN = 0.0;
-  G4double sumCosThetaParticleScatterZnS = 0.0;
-  G4double sumCosThetaAllScatter = 0.0;
-  G4double sumCosThetaBulkScatter = 0.0;
-  G4double sumCosThetaBoundaryScatter = 0.0;
-  G4double sumCosThetaBoundaryScatterBN = 0.0;
-  G4double sumCosThetaBoundaryScatterZnS = 0.0;
-
-  for (const auto &event : fEvents)
-  {
-    if (event.absorbed)
-      ++nAbsorbed;
-    nAbsorbedBN += event.num_absorbed_BN;
-    nAbsorbedZnS += event.num_absorbed_ZnS;
-    nAbsorbedMatrix += event.num_absorbed_Matrix;
-    if (event.final_status == "lost" || event.final_status == "reentry_failed")
-      ++nLost;
-    if (event.final_status == "reentry_failed")
-      ++nReentryFailed;
-    else if (event.final_status == "max_reentry")
-      ++nMaxReentry;
-    else if (event.final_status == "max_steps")
-      ++nMaxSteps;
-    else if (event.final_status == "max_path_length")
-      ++nMaxPathLength;
-    else if (event.final_status == "target_primary_scatter")
-      ++nTargetPrimaryScatter;
-
-    totalPathLengthUm += event.total_path_length_um;
-    totalPathLengthBNUm += event.path_length_bn_um;
-    totalPathLengthZnSUm += event.path_length_zns_um;
-    totalPathLengthMatrixUm += event.path_length_matrix_um;
-    totalPathLengthWorldUm += event.path_length_world_um;
-    totalEncounter += event.num_encounter_total;
-    totalEncounterBN += event.num_encounter_BN;
-    totalEncounterZnS += event.num_encounter_ZnS;
-    totalEncounterEffective += event.num_encounter_effective_total;
-    totalEncounterEffectiveBN += event.num_encounter_effective_BN;
-    totalEncounterEffectiveZnS += event.num_encounter_effective_ZnS;
-    sumCosThetaEncounter += event.sum_cos_theta_encounter;
-    sumCosThetaEncounterBN += event.sum_cos_theta_encounter_BN;
-    sumCosThetaEncounterZnS += event.sum_cos_theta_encounter_ZnS;
-    sumCosThetaEncounterEffective += event.sum_cos_theta_encounter_effective;
-    sumCosThetaEncounterEffectiveBN += event.sum_cos_theta_encounter_effective_BN;
-    sumCosThetaEncounterEffectiveZnS += event.sum_cos_theta_encounter_effective_ZnS;
-    sumOneMinusCosThetaEncounter += event.sum_one_minus_cos_theta_encounter;
-    sumOneMinusCosThetaEncounterBN += event.sum_one_minus_cos_theta_encounter_BN;
-    sumOneMinusCosThetaEncounterZnS += event.sum_one_minus_cos_theta_encounter_ZnS;
-    sumOneMinusCosThetaEncounterEffective += event.sum_one_minus_cos_theta_encounter_effective;
-    sumOneMinusCosThetaEncounterEffectiveBN += event.sum_one_minus_cos_theta_encounter_effective_BN;
-    sumOneMinusCosThetaEncounterEffectiveZnS += event.sum_one_minus_cos_theta_encounter_effective_ZnS;
-    sumCos2ThetaEncounter += event.sum_cos2_theta_encounter;
-    sumCos2ThetaEncounterBN += event.sum_cos2_theta_encounter_BN;
-    sumCos2ThetaEncounterZnS += event.sum_cos2_theta_encounter_ZnS;
-    sumCos2ThetaEncounterEffective += event.sum_cos2_theta_encounter_effective;
-    sumCos2ThetaEncounterEffectiveBN += event.sum_cos2_theta_encounter_effective_BN;
-    sumCos2ThetaEncounterEffectiveZnS += event.sum_cos2_theta_encounter_effective_ZnS;
-    for (std::size_t i = 0; i < phaseFunctionCounts.size(); ++i)
-      phaseFunctionCounts[i] += event.phase_function_histogram[i];
-
-    totalParticleScatter += event.num_particle_scatter;
-    totalParticleScatterBN += event.num_particle_scatter_BN;
-    totalParticleScatterZnS += event.num_particle_scatter_ZnS;
-    totalRealScatter += event.num_real_scatter;
-    totalBulkScatter += event.num_bulk_scatter;
-    totalBoundaryScatter += event.num_boundary_scatter;
-    totalBoundaryScatterBN += event.num_boundary_scatter_BN;
-    totalBoundaryScatterZnS += event.num_boundary_scatter_ZnS;
-    totalMaterialBoundary += event.num_material_boundary;
-    totalCompleteEncounter += event.num_complete_encounter_total;
-    totalCompleteEncounterBN += event.num_complete_encounter_BN;
-    totalCompleteEncounterZnS += event.num_complete_encounter_ZnS;
-    totalSurfaceReflectionEncounter += event.num_surface_reflection_encounter;
-    totalIncompleteInitialParticleExit += event.num_incomplete_initial_particle_exit;
-    totalCensoredParticleEncounter += event.num_censored_particle_encounter;
-    totalInconsistentEncounterState += event.num_inconsistent_encounter_state;
-    totalParticleToParticleBoundary += event.num_particle_to_particle_boundary;
-    totalUnknownParticleReflection += event.num_unknown_particle_reflection;
-    totalOuterBoundaryHits += event.num_outer_boundary_hits;
-    totalOuterBoundaryReentrySuccess += event.num_outer_boundary_reentry_success;
-    totalOuterBoundaryReentryFailed += event.num_outer_boundary_reentry_failed;
-    totalOuterBoundaryFresnelReflection += event.num_outer_boundary_fresnel_reflection;
-    totalOuterBoundaryTotalInternalReflection += event.num_outer_boundary_total_internal_reflection;
-    totalOuterBoundaryRefraction += event.num_outer_boundary_refraction;
-    totalOuterBoundaryTransmission += event.num_outer_boundary_transmission;
-    totalOuterBoundaryOtherStatus += event.num_outer_boundary_other_status;
-    totalReentry += event.num_reentry;
-    totalReentryBN += event.num_reentry_BN;
-    totalReentryZnS += event.num_reentry_ZnS;
-    totalReentryMatrix += event.num_reentry_matrix;
-    totalReentryParticleQMu += event.num_reentry_particle_q_mu;
-    totalReentryMatrixClearancePortal += event.num_reentry_matrix_clearance_portal;
-    totalReentryFallbackSameBin += event.num_reentry_fallback_same_bin;
-    totalReentryFallbackAdjacentBin += event.num_reentry_fallback_adjacent_bin;
-    totalReentryFallbackAnyBin += event.num_reentry_fallback_any_bin;
-    totalReentryFallbackAnyPhaseSameBin += event.num_reentry_fallback_any_phase_same_bin;
-    totalReentryFallbackAnyPortal += event.num_reentry_fallback_any_portal;
-    totalReentryRandomMatrixDebug += event.num_reentry_random_matrix_debug;
-    totalReentryFailed += event.num_reentry_failed;
-    sumCosThetaParticleScatter += event.sum_cos_theta_particle;
-    sumCosThetaParticleScatterBN += event.sum_cos_theta_particle_BN;
-    sumCosThetaParticleScatterZnS += event.sum_cos_theta_particle_ZnS;
-    sumCosThetaAllScatter += event.sum_cos_theta;
-    sumCosThetaBulkScatter += event.sum_cos_theta_bulk;
-    sumCosThetaBoundaryScatter += event.sum_cos_theta_boundary;
-    sumCosThetaBoundaryScatterBN += event.sum_cos_theta_boundary_BN;
-    sumCosThetaBoundaryScatterZnS += event.sum_cos_theta_boundary_ZnS;
-  }
-
+  const auto &acc = fAccumulator;
+  const G4long nPhotons = acc.nPhotons;
+  const G4long nAbsorbed = acc.nAbsorbed;
+  const G4long nAbsorbedBN = acc.nAbsorbedBN;
+  const G4long nAbsorbedZnS = acc.nAbsorbedZnS;
+  const G4long nAbsorbedMatrix = acc.nAbsorbedMatrix;
+  const G4long nLost = acc.nLost;
+  const G4long nReentryFailed = acc.nReentryFailed;
+  const G4long nEscapedDebug = acc.nEscapedDebug;
+  const G4long nPeriodicPhaseMismatch = acc.nPeriodicPhaseMismatch;
+  const G4long nPeriodicGeometryRequired = acc.nPeriodicGeometryRequired;
+  const G4long nDetected = acc.nDetected;
+  const G4long nMaxReentry = acc.nMaxReentry;
+  const G4long nMaxSteps = acc.nMaxSteps;
+  const G4long nMaxPathLength = acc.nMaxPathLength;
+  const G4long nTargetPrimaryScatter = acc.nTargetPrimaryScatter;
+  const G4double totalPathLengthUm = acc.totalPathLengthUm;
+  const G4double totalPathLengthBNUm = acc.totalPathLengthBNUm;
+  const G4double totalPathLengthZnSUm = acc.totalPathLengthZnSUm;
+  const G4double totalPathLengthMatrixUm = acc.totalPathLengthMatrixUm;
+  const G4double totalPathLengthWorldUm = acc.totalPathLengthWorldUm;
+  const G4long totalEncounter = acc.totalEncounter;
+  const G4long totalEncounterBN = acc.totalEncounterBN;
+  const G4long totalEncounterZnS = acc.totalEncounterZnS;
+  const G4long totalEncounterEffective = acc.totalEncounterEffective;
+  const G4long totalEncounterEffectiveBN = acc.totalEncounterEffectiveBN;
+  const G4long totalEncounterEffectiveZnS = acc.totalEncounterEffectiveZnS;
+  const G4double sumCosThetaEncounter = acc.sumCosThetaEncounter;
+  const G4double sumCosThetaEncounterBN = acc.sumCosThetaEncounterBN;
+  const G4double sumCosThetaEncounterZnS = acc.sumCosThetaEncounterZnS;
+  const G4double sumCosThetaEncounterEffective = acc.sumCosThetaEncounterEffective;
+  const G4double sumCosThetaEncounterEffectiveBN = acc.sumCosThetaEncounterEffectiveBN;
+  const G4double sumCosThetaEncounterEffectiveZnS = acc.sumCosThetaEncounterEffectiveZnS;
+  const G4double sumOneMinusCosThetaEncounter = acc.sumOneMinusCosThetaEncounter;
+  const G4double sumOneMinusCosThetaEncounterBN = acc.sumOneMinusCosThetaEncounterBN;
+  const G4double sumOneMinusCosThetaEncounterZnS = acc.sumOneMinusCosThetaEncounterZnS;
+  const G4double sumOneMinusCosThetaEncounterEffective =
+      acc.sumOneMinusCosThetaEncounterEffective;
+  const G4double sumOneMinusCosThetaEncounterEffectiveBN =
+      acc.sumOneMinusCosThetaEncounterEffectiveBN;
+  const G4double sumOneMinusCosThetaEncounterEffectiveZnS =
+      acc.sumOneMinusCosThetaEncounterEffectiveZnS;
+  const G4double sumCos2ThetaEncounter = acc.sumCos2ThetaEncounter;
+  const G4double sumCos2ThetaEncounterBN = acc.sumCos2ThetaEncounterBN;
+  const G4double sumCos2ThetaEncounterZnS = acc.sumCos2ThetaEncounterZnS;
+  const G4double sumCos2ThetaEncounterEffective = acc.sumCos2ThetaEncounterEffective;
+  const G4double sumCos2ThetaEncounterEffectiveBN = acc.sumCos2ThetaEncounterEffectiveBN;
+  const G4double sumCos2ThetaEncounterEffectiveZnS = acc.sumCos2ThetaEncounterEffectiveZnS;
+  const G4long totalParticleScatter = acc.totalParticleScatter;
+  const G4long totalParticleScatterBN = acc.totalParticleScatterBN;
+  const G4long totalParticleScatterZnS = acc.totalParticleScatterZnS;
+  const G4long totalRealScatter = acc.totalRealScatter;
+  const G4long totalBulkScatter = acc.totalBulkScatter;
+  const G4long totalBoundaryScatter = acc.totalBoundaryScatter;
+  const G4long totalBoundaryScatterBN = acc.totalBoundaryScatterBN;
+  const G4long totalBoundaryScatterZnS = acc.totalBoundaryScatterZnS;
+  const G4long totalMaterialBoundary = acc.totalMaterialBoundary;
+  const G4long totalCompleteEncounter = acc.totalCompleteEncounter;
+  const G4long totalCompleteEncounterBN = acc.totalCompleteEncounterBN;
+  const G4long totalCompleteEncounterZnS = acc.totalCompleteEncounterZnS;
+  const G4long totalSurfaceReflectionEncounter = acc.totalSurfaceReflectionEncounter;
+  const G4long totalIncompleteInitialParticleExit =
+      acc.totalIncompleteInitialParticleExit;
+  const G4long totalCensoredParticleEncounter = acc.totalCensoredParticleEncounter;
+  const G4long totalInconsistentEncounterState = acc.totalInconsistentEncounterState;
+  const G4long totalParticleToParticleBoundary = acc.totalParticleToParticleBoundary;
+  const G4long totalUnknownParticleReflection = acc.totalUnknownParticleReflection;
+  const G4long totalOuterBoundaryHits = acc.totalOuterBoundaryHits;
+  const G4long totalOuterBoundaryReentrySuccess = acc.totalOuterBoundaryReentrySuccess;
+  const G4long totalOuterBoundaryReentryFailed = acc.totalOuterBoundaryReentryFailed;
+  const G4long totalOuterBoundaryEscape = acc.totalOuterBoundaryEscape;
+  const G4long totalOuterBoundaryMaxReentryStop = acc.totalOuterBoundaryMaxReentryStop;
+  const G4long totalOuterBoundaryReentryAlgorithmFailed =
+      acc.totalOuterBoundaryReentryAlgorithmFailed;
+  const G4long totalOuterBoundaryPeriodicPhaseMismatch =
+      acc.totalOuterBoundaryPeriodicPhaseMismatch;
+  const G4long totalOuterBoundaryFresnelReflection =
+      acc.totalOuterBoundaryFresnelReflection;
+  const G4long totalOuterBoundaryTotalInternalReflection =
+      acc.totalOuterBoundaryTotalInternalReflection;
+  const G4long totalOuterBoundaryRefraction = acc.totalOuterBoundaryRefraction;
+  const G4long totalOuterBoundaryTransmission = acc.totalOuterBoundaryTransmission;
+  const G4long totalOuterBoundaryOtherStatus = acc.totalOuterBoundaryOtherStatus;
+  const G4long totalReentry = acc.totalReentry;
+  const G4long totalReentryBN = acc.totalReentryBN;
+  const G4long totalReentryZnS = acc.totalReentryZnS;
+  const G4long totalReentryMatrix = acc.totalReentryMatrix;
+  const G4long totalReentryParticleQMu = acc.totalReentryParticleQMu;
+  const G4long totalReentryMatrixClearancePortal =
+      acc.totalReentryMatrixClearancePortal;
+  const G4long totalReentryFallbackSameBin = acc.totalReentryFallbackSameBin;
+  const G4long totalReentryFallbackAdjacentBin = acc.totalReentryFallbackAdjacentBin;
+  const G4long totalReentryFallbackAnyBin = acc.totalReentryFallbackAnyBin;
+  const G4long totalReentryFallbackAnyPhaseSameBin =
+      acc.totalReentryFallbackAnyPhaseSameBin;
+  const G4long totalReentryFallbackAnyPortal = acc.totalReentryFallbackAnyPortal;
+  const G4long totalReentryRandomMatrixDebug = acc.totalReentryRandomMatrixDebug;
+  const G4long totalReentryFailed = acc.totalReentryFailed;
+  const G4double sumCosThetaParticleScatter = acc.sumCosThetaParticleScatter;
+  const G4double sumCosThetaParticleScatterBN = acc.sumCosThetaParticleScatterBN;
+  const G4double sumCosThetaParticleScatterZnS = acc.sumCosThetaParticleScatterZnS;
+  const G4double sumCosThetaAllScatter = acc.sumCosThetaAllScatter;
+  const G4double sumCosThetaBulkScatter = acc.sumCosThetaBulkScatter;
+  const G4double sumCosThetaBoundaryScatter = acc.sumCosThetaBoundaryScatter;
+  const G4double sumCosThetaBoundaryScatterBN = acc.sumCosThetaBoundaryScatterBN;
+  const G4double sumCosThetaBoundaryScatterZnS = acc.sumCosThetaBoundaryScatterZnS;
   const G4double nPhotonsD = (nPhotons > 0) ? static_cast<G4double>(nPhotons) : 1.0;
   const G4double totalMediumPathLengthUm =
       totalPathLengthBNUm + totalPathLengthZnSUm + totalPathLengthMatrixUm;
@@ -951,22 +1036,31 @@ void StageDOpticalRunAction::WriteSummaryFile() const
   }
 
   if (totalOuterBoundaryHits !=
-      totalOuterBoundaryReentrySuccess + totalOuterBoundaryReentryFailed)
+      totalOuterBoundaryReentrySuccess +
+          totalOuterBoundaryEscape +
+          totalOuterBoundaryMaxReentryStop +
+          totalOuterBoundaryReentryAlgorithmFailed +
+          totalOuterBoundaryPeriodicPhaseMismatch)
   {
     G4cout << "[StageDOpticalRunAction] Warning: outer boundary diagnostic mismatch."
            << " hits=" << totalOuterBoundaryHits
            << " success=" << totalOuterBoundaryReentrySuccess
-           << " failed=" << totalOuterBoundaryReentryFailed
+           << " escape=" << totalOuterBoundaryEscape
+           << " max_reentry=" << totalOuterBoundaryMaxReentryStop
+           << " algorithm_failed=" << totalOuterBoundaryReentryAlgorithmFailed
+           << " phase_mismatch=" << totalOuterBoundaryPeriodicPhaseMismatch
            << G4endl;
   }
 
   if (fConfig != nullptr &&
       (fConfig->stageD_boundary_mode == "same_phase_reentry" ||
        fConfig->stageD_boundary_mode == "periodic_wrap") &&
-      totalOuterBoundaryReentryFailed > 0)
+      (totalOuterBoundaryReentryAlgorithmFailed > 0 ||
+       totalOuterBoundaryPeriodicPhaseMismatch > 0))
   {
     G4cout << "[StageDOpticalRunAction] Warning: outer boundary re-entry failures detected."
-           << " failed=" << totalOuterBoundaryReentryFailed
+           << " algorithm_failed=" << totalOuterBoundaryReentryAlgorithmFailed
+           << " phase_mismatch=" << totalOuterBoundaryPeriodicPhaseMismatch
            << ". Production periodic runs should have zero failures."
            << G4endl;
   }
@@ -1002,6 +1096,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << "n_lost,"
       << "lost_fraction,"
       << "n_reentry_failed,"
+      << "n_escaped_debug,"
+      << "n_periodic_phase_mismatch,"
+      << "n_periodic_geometry_required,"
+      << "n_detected,"
       << "n_max_reentry,"
       << "n_max_steps,"
       << "n_max_path_length,"
@@ -1056,6 +1154,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << "total_outer_boundary_hits,"
       << "total_outer_boundary_reentry_success,"
       << "total_outer_boundary_reentry_failed,"
+      << "total_outer_boundary_escape,"
+      << "total_outer_boundary_max_reentry_stop,"
+      << "total_outer_boundary_reentry_algorithm_failed,"
+      << "total_outer_boundary_periodic_phase_mismatch,"
       << "total_outer_boundary_fresnel_reflection,"
       << "total_outer_boundary_total_internal_reflection,"
       << "total_outer_boundary_refraction,"
@@ -1147,6 +1249,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << nLost << ","
       << static_cast<G4double>(nLost) / nPhotonsD << ","
       << nReentryFailed << ","
+      << nEscapedDebug << ","
+      << nPeriodicPhaseMismatch << ","
+      << nPeriodicGeometryRequired << ","
+      << nDetected << ","
       << nMaxReentry << ","
       << nMaxSteps << ","
       << nMaxPathLength << ","
@@ -1201,6 +1307,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << totalOuterBoundaryHits << ","
       << totalOuterBoundaryReentrySuccess << ","
       << totalOuterBoundaryReentryFailed << ","
+      << totalOuterBoundaryEscape << ","
+      << totalOuterBoundaryMaxReentryStop << ","
+      << totalOuterBoundaryReentryAlgorithmFailed << ","
+      << totalOuterBoundaryPeriodicPhaseMismatch << ","
       << totalOuterBoundaryFresnelReflection << ","
       << totalOuterBoundaryTotalInternalReflection << ","
       << totalOuterBoundaryRefraction << ","
@@ -1291,16 +1401,10 @@ void StageDOpticalRunAction::WritePhaseFunctionFile() const
     return;
   }
 
-  std::array<G4long, StageDPhotonEventRecord::kPhaseFunctionBins> counts{};
+  const auto &counts = fAccumulator.phaseFunctionCounts;
   G4long totalCount = 0;
-  for (const auto &event : fEvents)
-  {
-    for (std::size_t i = 0; i < counts.size(); ++i)
-    {
-      counts[i] += event.phase_function_histogram[i];
-      totalCount += event.phase_function_histogram[i];
-    }
-  }
+  for (const auto count : counts)
+    totalCount += count;
 
   fout << "lambda_nm,bin_id,cos_theta_min,cos_theta_max,count,probability,probability_density\n";
   const G4double binWidth = 2.0 / static_cast<G4double>(counts.size());
@@ -1335,6 +1439,8 @@ void StageDOpticalRunAction::EndOfRunAction(const G4Run *run)
 
   if (fEventsCsv.is_open())
     fEventsCsv.close();
+  if (fReentryDiagnosticsCsv.is_open())
+    fReentryDiagnosticsCsv.close();
 
   WriteSummaryFile();
   WritePhaseFunctionFile();
@@ -1343,6 +1449,6 @@ void StageDOpticalRunAction::EndOfRunAction(const G4Run *run)
          << "\n  events csv  = " << fEventsCsvPath
          << "\n  summary csv = " << fSummaryCsvPath
          << "\n  phase csv   = " << fPhaseFunctionCsvPath
-         << "\n  n photons   = " << fEvents.size()
+         << "\n  n photons   = " << fAccumulator.nPhotons
          << G4endl;
 }

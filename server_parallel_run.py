@@ -101,9 +101,6 @@ def parse_args():
             "angle_threshold",
             "particle_encounter_angle_threshold",
             "particle_encounter_no_threshold",
-            "boundary_deflection",
-            "particle_exit_deflection",
-            "step_angle_threshold",
         ],
     )
     stage_d.add_argument("--target-primary-scatter", type=int, default=0)
@@ -474,7 +471,12 @@ def prepare_stage_b_tasks_for_ratio(
                     "neutron_capture_positions.csv"
                 )
                 chunk_path = placement_chunk_dir / chunk_name
-                stageb.write_chunk(chunk_path, assignment["header"], placement_chunk_rows)
+                stageb.write_chunk(
+                    chunk_path,
+                    assignment["header"],
+                    placement_chunk_rows,
+                    placement_replay_index=replay_idx,
+                )
                 event_count += len(placement_chunk_rows)
                 chunk_count += 1
 

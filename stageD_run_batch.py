@@ -123,9 +123,6 @@ def parse_args():
             "angle_threshold",
             "particle_encounter_angle_threshold",
             "particle_encounter_no_threshold",
-            "boundary_deflection",
-            "particle_exit_deflection",
-            "step_angle_threshold",
         ],
         help="StageD primary scatter metric. Use angle_threshold with theta-threshold-deg for physical primary mu_s/g/mu_s_prime.",
     )

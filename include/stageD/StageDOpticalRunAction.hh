@@ -7,7 +7,6 @@
 #include <array>
 #include <fstream>
 #include <string>
-#include <vector>
 
 class G4Run;
 class AnalysisConfig;
@@ -44,6 +43,7 @@ private:
   void WriteSummaryFile() const;
   void WritePhaseFunctionFile() const;
   void WriteGeometryMetadataFile(const DetectorConstruction *detector) const;
+  void AccumulatePhotonEvent(const StageDPhotonEventRecord &event);
 
 private:
   AnalysisConfig *fConfig;
@@ -57,8 +57,9 @@ private:
   std::string fRatioTag;
   std::string fPlacementFile;
   std::string fPlacementStem;
-  std::vector<StageDPhotonEventRecord> fEvents;
+  StageDRunAccumulator fAccumulator;
   StageDReentryPortalSummary fReentryPortalSummary;
+  G4long fReentryDiagnosticRowsWritten;
 };
 
 #endif

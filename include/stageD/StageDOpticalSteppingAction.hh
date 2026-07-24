@@ -7,6 +7,7 @@
 
 class G4Step;
 class G4Track;
+class G4OpBoundaryProcess;
 class AnalysisConfig;
 class StageDOpticalEventAction;
 class StageDOpticalRunAction;
@@ -24,6 +25,7 @@ public:
 
 private:
   const DetectorConstruction *ResolveDetector() const;
+  G4OpBoundaryProcess *ResolveBoundaryProcess() const;
   G4bool HandleBoundaryReentry(const G4Step *step,
                                G4Track *track,
                                const DetectorConstruction *detector,
@@ -35,6 +37,7 @@ private:
   StageDOpticalRunAction *fRunAction;
   StageDOpticalEventAction *fEventAction;
   mutable const DetectorConstruction *fDetector;
+  mutable G4OpBoundaryProcess *fBoundaryProcess;
   StageDReentrySampler *fReentrySampler;
 };
 

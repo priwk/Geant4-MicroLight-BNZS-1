@@ -90,6 +90,11 @@ Output/stageB/<ratio>/<thickness>_zns_track_steps.csv
 Output/stageB/<ratio>/<thickness>_boundary_stop_summary.csv
 ```
 
+`*_zns_track_steps.csv` records ZnS energy deposition from all transported
+particles. The original `x_*_um` columns are folded RVE coordinates;
+`unwrapped_*` columns are continuous across periodic cells, and `screen_*`
+columns place those steps back in the finite-screen coordinate system.
+
 ## Stage D
 
 示例：
@@ -109,6 +114,18 @@ StageD_OpticalHomogenization.mac
 Stage D 默认使用 `periodic_wrap`：光子越过人工 RVE 面后，在对面同一周期坐标
 继续，方向、偏振、能量、时间和权重保持不变。旧的 `same_phase_reentry`
 统计重采样模式仍保留用于结果兼容。输出位于：
+
+逐次重入诊断默认关闭。调试时可通过宏命令开启并限制输出规模：
+
+```text
+/cfg/stageD/setWriteReentryDiagnostics true
+/cfg/stageD/setReentryDiagnosticsSamplingRate 0.01
+/cfg/stageD/setMaxDiagnosticRows 100000
+```
+
+对应环境变量为 `BNZS_STAGED_WRITE_REENTRY_DIAGNOSTICS`、
+`BNZS_STAGED_REENTRY_DIAGNOSTICS_SAMPLING_RATE` 和
+`BNZS_STAGED_MAX_DIAGNOSTIC_ROWS`。
 
 ```text
 Output/stageD_optical_homogenization/<ratio>/<placement_id>/lambda_<wavelength>nm/
