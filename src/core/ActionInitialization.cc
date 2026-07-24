@@ -65,6 +65,7 @@ void ActionInitialization::Build() const
       eventAction->GetStageBEventAction(),
       primaryAction->GetStageBPrimaryAction(),
       eventAction->GetStageDEventAction());
+  runAction->SetStageDSteppingAction(steppingAction->GetStageDSteppingAction());
   SetUserAction(steppingAction);
 
   auto *stackingAction = new StageAStackingAction(fConfig);

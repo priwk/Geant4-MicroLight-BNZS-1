@@ -156,6 +156,9 @@ struct StageDPhotonEventRecord
   G4int num_reentry_ZnS = 0;
   G4int num_reentry_matrix = 0;
   G4int num_reentry_particle_q_mu = 0;
+  G4int num_reentry_particle_q_only = 0;
+  G4int num_reentry_particle_q_only_fallback = 0;
+  G4int num_reentry_particle_volume_random = 0;
   G4int num_reentry_matrix_clearance_portal = 0;
   G4int num_reentry_fallback_same_bin = 0;
   G4int num_reentry_fallback_adjacent_bin = 0;
@@ -276,6 +279,9 @@ struct StageDRunAccumulator
   G4long totalReentryZnS = 0;
   G4long totalReentryMatrix = 0;
   G4long totalReentryParticleQMu = 0;
+  G4long totalReentryParticleQOnly = 0;
+  G4long totalReentryParticleQOnlyFallback = 0;
+  G4long totalReentryParticleVolumeRandom = 0;
   G4long totalReentryMatrixClearancePortal = 0;
   G4long totalReentryFallbackSameBin = 0;
   G4long totalReentryFallbackAdjacentBin = 0;

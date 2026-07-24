@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
 #include <sstream>
 
 namespace
@@ -39,7 +40,8 @@ RunAction::RunAction(PrimaryGeneratorAction *primaryAction, AnalysisConfig *conf
       fUnexpectedBoundaryExitCsvPath(""),
       fBoundaryStopSummaryCsvPath(""),
       fCurrentOutputInputPath(""),
-      fBoundarySummaries()
+      fBoundarySummaries(),
+      fInitializedOutputFiles()
 {
 }
 
@@ -293,6 +295,16 @@ void RunAction::WriteCaptureAnchorCsvHeader()
         << "bn_center_x_um,"
         << "bn_center_y_um,"
         << "bn_center_z_um,"
+        << "bn_particle_id,"
+        << "bn_radius_class_id,"
+        << "bn_radius_um,"
+        << "bn_image_ix,"
+        << "bn_image_iy,"
+        << "bn_image_iz,"
+        << "reaction_branch,"
+        << "launch_dir_x,"
+        << "launch_dir_y,"
+        << "launch_dir_z,"
         << "alphali_replay_index,"
         << "alphali_replay_count,"
         << "trajectory_weight"
@@ -369,8 +381,6 @@ void RunAction::WriteUnexpectedBoundaryExitCsvHeader()
 
 void RunAction::OpenOutputsForInputPath(const std::string &inputPath)
 {
-    if (inputPath == fCurrentOutputInputPath)
-        return;
     OpenOutputsForPaths(MakeOutputPathsFromInputPath(inputPath));
     fCurrentOutputInputPath = inputPath;
 }
@@ -390,13 +400,17 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
         return;
     }
 
-    if (!fBoundaryStopSummaryCsvPath.empty())
+    const G4bool sameOutputSet =
+        !fBoundaryStopSummaryCsvPath.empty() &&
+        paths.boundary_stop_summary == fBoundaryStopSummaryCsvPath;
+    if (!fBoundaryStopSummaryCsvPath.empty() && !sameOutputSet)
     {
         WriteBoundarySummaryCsv();
     }
 
     CloseOpenOutputs();
-    fBoundarySummaries.clear();
+    if (!sameOutputSet)
+        fBoundarySummaries.clear();
 
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -413,9 +427,21 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
     fUnexpectedBoundaryExitCsvPath = paths.unexpected_boundary_exits;
     fBoundaryStopSummaryCsvPath = paths.boundary_stop_summary;
 
+    auto openOutput = [&](std::ofstream &stream, const std::string &path)
+    {
+        const G4bool append = fInitializedOutputFiles.find(path) != fInitializedOutputFiles.end();
+        stream.open(path.c_str(), std::ios::out | (append ? std::ios::app : std::ios::trunc));
+        if (stream.is_open())
+        {
+            stream << std::setprecision(15);
+            fInitializedOutputFiles.insert(path);
+        }
+        return append;
+    };
+
     if (IsFullMode())
     {
-        fFullStepCsv.open(fFullStepCsvPath.c_str(), std::ios::out);
+        const G4bool append = openOutput(fFullStepCsv, fFullStepCsvPath);
         if (!fFullStepCsv.is_open())
         {
             G4Exception(exceptionSource,
@@ -423,10 +449,11 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
                         ("Failed to open output CSV: " + fFullStepCsvPath).c_str());
             return;
         }
-        WriteFullStepCsvHeader();
+        if (!append)
+            WriteFullStepCsvHeader();
     }
 
-    fCaptureAnchorCsv.open(fCaptureAnchorCsvPath.c_str(), std::ios::out);
+    const G4bool appendAnchors = openOutput(fCaptureAnchorCsv, fCaptureAnchorCsvPath);
     if (!fCaptureAnchorCsv.is_open())
     {
         G4Exception(exceptionSource,
@@ -434,9 +461,10 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
                     ("Failed to open capture anchor CSV: " + fCaptureAnchorCsvPath).c_str());
         return;
     }
-    WriteCaptureAnchorCsvHeader();
+    if (!appendAnchors)
+        WriteCaptureAnchorCsvHeader();
 
-    fSlimTrackCsv.open(fSlimTrackCsvPath.c_str(), std::ios::out);
+    const G4bool appendSlim = openOutput(fSlimTrackCsv, fSlimTrackCsvPath);
     if (!fSlimTrackCsv.is_open())
     {
         G4Exception(exceptionSource,
@@ -444,9 +472,11 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
                     ("Failed to open slim track CSV: " + fSlimTrackCsvPath).c_str());
         return;
     }
-    WriteSlimTrackCsvHeader();
+    if (!appendSlim)
+        WriteSlimTrackCsvHeader();
 
-    fUnexpectedBoundaryExitCsv.open(fUnexpectedBoundaryExitCsvPath.c_str(), std::ios::out);
+    const G4bool appendUnexpected =
+        openOutput(fUnexpectedBoundaryExitCsv, fUnexpectedBoundaryExitCsvPath);
     if (!fUnexpectedBoundaryExitCsv.is_open())
     {
         G4Exception(exceptionSource,
@@ -454,7 +484,8 @@ void RunAction::OpenOutputsForPaths(const OutputPaths &paths)
                     ("Failed to open unexpected boundary exit CSV: " + fUnexpectedBoundaryExitCsvPath).c_str());
         return;
     }
-    WriteUnexpectedBoundaryExitCsvHeader();
+    if (!appendUnexpected)
+        WriteUnexpectedBoundaryExitCsvHeader();
 
     G4cout << "[RunAction] Switched Stage B output CSVs to:"
            << (IsFullMode() ? "\n  full alpha/Li tracks = " + fFullStepCsvPath : "")
@@ -509,6 +540,16 @@ void RunAction::AppendCaptureAnchor(const CaptureAnchorRow &row)
         << row.bn_center_x_um << ","
         << row.bn_center_y_um << ","
         << row.bn_center_z_um << ","
+        << row.bn_particle_id << ","
+        << row.bn_radius_class_id << ","
+        << row.bn_radius_um << ","
+        << row.bn_image_ix << ","
+        << row.bn_image_iy << ","
+        << row.bn_image_iz << ","
+        << row.reaction_branch << ","
+        << row.launch_dir_x << ","
+        << row.launch_dir_y << ","
+        << row.launch_dir_z << ","
         << row.alphali_replay_index << ","
         << row.alphali_replay_count << ","
         << row.trajectory_weight
@@ -595,6 +636,7 @@ void RunAction::WriteBoundarySummaryCsv()
                     ("Failed to open boundary summary CSV: " + fBoundaryStopSummaryCsvPath).c_str());
         return;
     }
+    out << std::setprecision(15);
 
     out << "thickness_um,"
         << "placement_file,"

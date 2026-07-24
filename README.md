@@ -129,7 +129,11 @@ Stage D 默认使用 `periodic_wrap`：光子越过人工 RVE 面后，在对面
 
 ```text
 Output/stageD_optical_homogenization/<ratio>/<placement_id>/lambda_<wavelength>nm/
+  <source>__<boundary>__<config_hash>/run_<run_id>_seeds_<seed0>_<seed1>/
 ```
+
+`server_parallel_run.py staged` 和 `stageD_run_batch.py` 会为每个 placement 写入不同的
+Geant4 随机种子，避免重复批次误覆盖。Stage D CSV 使用 15 位有效数字。
 
 后处理：
 

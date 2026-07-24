@@ -4,6 +4,7 @@
 #include "RunAction.hh"
 #include "StageARunAction.hh"
 #include "StageDOpticalRunAction.hh"
+#include "StageDOpticalSteppingAction.hh"
 #include "PrimaryGeneratorAction.hh"
 
 #include "G4Run.hh"
@@ -16,7 +17,8 @@ ModeRunAction::ModeRunAction(AnalysisConfig *config)
       fStageBRunAction(nullptr),
       fStageARunAction(nullptr),
       fStageDRunAction(nullptr),
-      fStageBPrimaryAction(nullptr)
+      fStageBPrimaryAction(nullptr),
+      fStageDSteppingAction(nullptr)
 {
     if (fConfig == nullptr)
     {
@@ -92,6 +94,8 @@ void ModeRunAction::BeginOfRunAction(const G4Run *run)
                         "Stage D optical run action is null.");
             return;
         }
+        if (fStageDSteppingAction != nullptr)
+            fStageDSteppingAction->PrepareForNewRun();
         fStageDRunAction->BeginOfRunAction(run);
         return;
 
@@ -178,4 +182,10 @@ void ModeRunAction::SetStageBPrimaryAction(PrimaryGeneratorAction *primaryAction
     {
         fStageBRunAction->SetPrimaryAction(primaryAction);
     }
+}
+
+void ModeRunAction::SetStageDSteppingAction(
+    StageDOpticalSteppingAction *steppingAction)
+{
+    fStageDSteppingAction = steppingAction;
 }

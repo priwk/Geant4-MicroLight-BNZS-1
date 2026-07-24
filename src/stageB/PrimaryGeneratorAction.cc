@@ -249,7 +249,22 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
       fCurrentSelectedBNCenter(),
       fCurrentSurfaceMode(""),
       fCurrentTargetLocalZ(0.0),
-      fCurrentUsedLocalZ(0.0)
+      fCurrentUsedLocalZ(0.0),
+      fCurrentSelectedBNParticleId(-1),
+      fCurrentSelectedBNRadiusClassId(-1),
+      fCurrentSelectedBNRadius(0.0),
+      fCurrentBNImageIx(0),
+      fCurrentBNImageIy(0),
+      fCurrentBNImageIz(0),
+      fCurrentReactionBranch(""),
+      fCurrentLaunchDirection(),
+      fBNSamplingDetectorIdentity(nullptr),
+      fBNSamplingSphereCount(0),
+      fBNSamplingBoxZ(0.0),
+      fBNSamplingZBinWidth(0.0),
+      fBNSamplingZBinCount(0),
+      fBNVolumeCdf(),
+      fBNZBins()
 {
   fParticleGun = new G4ParticleGun(1);
 
@@ -888,13 +903,18 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
   G4ThreeVector chosenCenter;
+  G4int chosenSphereIndex = -1;
   G4double chosenRadius = 0.0;
   G4double usedZ = 0.0;
   G4bool usedFallback = false;
 
   if (fCurrentSurfaceMode == "bulk")
   {
-    if (!SampleBulkCapturePoint(chosenCenter, fCurrentLocalCapturePosition, usedFallback))
+    if (!SampleBulkCapturePoint(
+            chosenSphereIndex,
+            chosenCenter,
+            fCurrentLocalCapturePosition,
+            usedFallback))
     {
       G4Exception("PrimaryGeneratorAction::PrepareCurrentCaptureReplayState",
                   "BNZS008", FatalException,
@@ -909,6 +929,7 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
   {
     if (!SelectBNSphereForTargetZ(
             fCurrentTargetLocalZ,
+            chosenSphereIndex,
             chosenCenter,
             chosenRadius,
             usedZ,
@@ -933,7 +954,33 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
     }
   }
 
-  fCurrentSelectedBNCenter = chosenCenter;
+  if (det == nullptr || chosenSphereIndex < 0 ||
+      chosenSphereIndex >= static_cast<G4int>(det->GetBNSpheres().size()))
+  {
+    G4Exception("PrimaryGeneratorAction::PrepareCurrentCaptureReplayState",
+                "BNZS008", FatalException,
+                "Selected BN sphere index is invalid.");
+    return false;
+  }
+
+  const auto &selectedSphere =
+      det->GetBNSpheres()[static_cast<std::size_t>(chosenSphereIndex)];
+  const G4double boxX = det->GetBoxXUm() * um;
+  const G4double boxY = det->GetBoxYUm() * um;
+  const G4double boxZ = det->GetBoxZUm() * um;
+  fCurrentBNImageIx = static_cast<G4int>(std::nearbyint(
+      (fCurrentLocalCapturePosition.x() - selectedSphere.center.x()) / boxX));
+  fCurrentBNImageIy = static_cast<G4int>(std::nearbyint(
+      (fCurrentLocalCapturePosition.y() - selectedSphere.center.y()) / boxY));
+  fCurrentBNImageIz = static_cast<G4int>(std::nearbyint(
+      (fCurrentLocalCapturePosition.z() - selectedSphere.center.z()) / boxZ));
+  fCurrentSelectedBNCenter = selectedSphere.center + G4ThreeVector(
+      fCurrentBNImageIx * boxX,
+      fCurrentBNImageIy * boxY,
+      fCurrentBNImageIz * boxZ);
+  fCurrentSelectedBNParticleId = selectedSphere.particleId;
+  fCurrentSelectedBNRadiusClassId = selectedSphere.radiusClassId;
+  fCurrentSelectedBNRadius = selectedSphere.radius;
   fCurrentUsedLocalZ = usedZ;
   fCurrentAlphaLiReplayIndex = 0;
   fRemainingReplaysForCurrentCapture = fAlphaLiReplayPerCapture;
@@ -1055,30 +1102,48 @@ G4double PrimaryGeneratorAction::DetermineTargetLocalZ(
 
 G4bool PrimaryGeneratorAction::SelectBNSphereForTargetZ(
     G4double targetZ,
+    G4int &chosenSphereIndex,
     G4ThreeVector &chosenCenter,
     G4double &chosenRadius,
     G4double &usedZ,
-    G4bool &usedFallback) const
+    G4bool &usedFallback)
 {
   const auto *det = dynamic_cast<const DetectorConstruction *>(
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
+  EnsureBNSamplingCache();
   const auto &spheres = det->GetBNSpheres();
+  if (spheres.empty() || fBNSamplingZBinCount <= 0 || fBNZBins.empty())
+    return false;
   const G4double boxZ = det->GetBoxZUm() * um;
   std::vector<G4int> candidateIdx;
   std::vector<G4double> weights;
-  for (G4int i = 0; i < static_cast<G4int>(spheres.size()); ++i)
+  std::vector<G4int> candidateBins;
+  const G4int centerBin = BNSamplingZBin(targetZ);
+  for (G4int offset = -1; offset <= 1; ++offset)
   {
-    const auto &sphere = spheres[static_cast<std::size_t>(i)];
-    G4double dz = targetZ - sphere.center.z();
-    dz -= boxZ * std::nearbyint(dz / boxZ);
-    if (std::abs(dz) < sphere.radius)
+    const G4int bin = (centerBin + offset + fBNSamplingZBinCount) %
+                      fBNSamplingZBinCount;
+    if (std::find(candidateBins.begin(), candidateBins.end(), bin) ==
+        candidateBins.end())
+      candidateBins.push_back(bin);
+  }
+
+  for (const G4int bin : candidateBins)
+  {
+    for (const G4int i : fBNZBins[static_cast<std::size_t>(bin)])
     {
-      const G4double area = pi * (sphere.radius * sphere.radius - dz * dz);
-      if (area > 0.0)
+      const auto &sphere = spheres[static_cast<std::size_t>(i)];
+      G4double dz = targetZ - sphere.center.z();
+      dz -= boxZ * std::nearbyint(dz / boxZ);
+      if (std::abs(dz) < sphere.radius)
       {
-        candidateIdx.push_back(i);
-        weights.push_back(area);
+        const G4double area = pi * (sphere.radius * sphere.radius - dz * dz);
+        if (area > 0.0)
+        {
+          candidateIdx.push_back(i);
+          weights.push_back(area);
+        }
       }
     }
   }
@@ -1093,6 +1158,7 @@ G4bool PrimaryGeneratorAction::SelectBNSphereForTargetZ(
       if (pick <= 0.0 || k == static_cast<G4int>(candidateIdx.size()) - 1)
       {
         const auto &sphere = spheres[static_cast<std::size_t>(candidateIdx[static_cast<std::size_t>(k)])];
+        chosenSphereIndex = candidateIdx[static_cast<std::size_t>(k)];
         chosenCenter = sphere.center;
         chosenCenter.setZ(targetZ -
                           (targetZ - sphere.center.z() -
@@ -1105,6 +1171,71 @@ G4bool PrimaryGeneratorAction::SelectBNSphereForTargetZ(
     }
   }
   return false;
+}
+
+void PrimaryGeneratorAction::EnsureBNSamplingCache()
+{
+  const auto *det = dynamic_cast<const DetectorConstruction *>(
+      G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+  if (det == nullptr)
+    return;
+
+  const auto &spheres = det->GetBNSpheres();
+  const G4double boxZ = det->GetBoxZUm() * um;
+  if (fBNSamplingDetectorIdentity == det &&
+      fBNSamplingSphereCount == spheres.size() &&
+      fBNSamplingBoxZ == boxZ &&
+      !fBNVolumeCdf.empty() && !fBNZBins.empty())
+  {
+    return;
+  }
+
+  fBNSamplingDetectorIdentity = det;
+  fBNSamplingSphereCount = spheres.size();
+  fBNSamplingBoxZ = boxZ;
+  fBNVolumeCdf.clear();
+  fBNZBins.clear();
+  if (spheres.empty() || boxZ <= 0.0)
+  {
+    fBNSamplingZBinCount = 0;
+    fBNSamplingZBinWidth = 0.0;
+    return;
+  }
+
+  G4double maxRadius = 0.0;
+  G4double cumulativeVolumeWeight = 0.0;
+  fBNVolumeCdf.reserve(spheres.size());
+  for (const auto &sphere : spheres)
+  {
+    maxRadius = std::max(maxRadius, sphere.radius);
+    cumulativeVolumeWeight += sphere.radius * sphere.radius * sphere.radius;
+    fBNVolumeCdf.push_back(cumulativeVolumeWeight);
+  }
+
+  fBNSamplingZBinCount = std::max(
+      1, static_cast<G4int>(std::floor(boxZ / std::max(maxRadius, 1.0e-12 * um))));
+  fBNSamplingZBinWidth = boxZ / fBNSamplingZBinCount;
+  fBNZBins.resize(static_cast<std::size_t>(fBNSamplingZBinCount));
+  for (G4int i = 0; i < static_cast<G4int>(spheres.size()); ++i)
+  {
+    const G4int bin = BNSamplingZBin(spheres[static_cast<std::size_t>(i)].center.z());
+    fBNZBins[static_cast<std::size_t>(bin)].push_back(i);
+  }
+}
+
+G4int PrimaryGeneratorAction::BNSamplingZBin(G4double z) const
+{
+  if (fBNSamplingZBinCount <= 1 || fBNSamplingBoxZ <= 0.0)
+    return 0;
+
+  const G4double halfZ = 0.5 * fBNSamplingBoxZ;
+  G4double wrappedZ = z - fBNSamplingBoxZ *
+                              std::floor((z + halfZ) / fBNSamplingBoxZ);
+  if (wrappedZ >= halfZ)
+    wrappedZ -= fBNSamplingBoxZ;
+  G4int bin = static_cast<G4int>(
+      std::floor((wrappedZ + halfZ) / fBNSamplingZBinWidth));
+  return std::clamp(bin, 0, fBNSamplingZBinCount - 1);
 }
 
 // --------------------------------------------------------------------
@@ -1171,34 +1302,30 @@ G4ThreeVector PrimaryGeneratorAction::SamplePointInSphereVolume(
 // --------------------------------------------------------------------
 
 G4bool PrimaryGeneratorAction::SampleBulkCapturePoint(
+    G4int &chosenSphereIndex,
     G4ThreeVector &chosenCenter,
     G4ThreeVector &capturePoint,
-    G4bool &usedFallback) const
+    G4bool &usedFallback)
 {
   const auto *det = dynamic_cast<const DetectorConstruction *>(
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
   const auto &spheres = det->GetBNSpheres();
-  if (spheres.empty())
+  EnsureBNSamplingCache();
+  if (spheres.empty() || fBNVolumeCdf.empty() || fBNVolumeCdf.back() <= 0.0)
     return false;
-  G4double totalWeight = 0.0;
-  for (const auto &sphere : spheres)
-    totalWeight += sphere.radius * sphere.radius * sphere.radius;
-  G4double pick = G4UniformRand() * totalWeight;
-  const DetectorConstruction::SphereInfo *chosenSphere = &spheres.back();
-  for (const auto &sphere : spheres)
-  {
-    pick -= sphere.radius * sphere.radius * sphere.radius;
-    if (pick <= 0.0)
-    {
-      chosenSphere = &sphere;
-      break;
-    }
-  }
-  chosenCenter = chosenSphere->center;
+
+  const G4double pick = G4UniformRand() * fBNVolumeCdf.back();
+  const auto it = std::lower_bound(fBNVolumeCdf.begin(), fBNVolumeCdf.end(), pick);
+  chosenSphereIndex = static_cast<G4int>(
+      std::distance(fBNVolumeCdf.begin(), it));
+  chosenSphereIndex = std::min(
+      chosenSphereIndex, static_cast<G4int>(spheres.size()) - 1);
+  const auto &chosenSphere = spheres[static_cast<std::size_t>(chosenSphereIndex)];
+  chosenCenter = chosenSphere.center;
   for (G4int trial = 0; trial < 64; ++trial)
   {
-    G4ThreeVector p = SamplePointInSphereVolume(chosenCenter, chosenSphere->radius);
+    G4ThreeVector p = SamplePointInSphereVolume(chosenCenter, chosenSphere.radius);
     p = det->WrapToPrimaryCell(p);
     if (det->FindPhaseAtPoint(p) == DetectorConstruction::Phase::BN)
     {
@@ -1216,7 +1343,8 @@ G4bool PrimaryGeneratorAction::SampleBulkCapturePoint(
 void PrimaryGeneratorAction::GenerateReactionProducts(
     G4Event *event,
     const G4ThreeVector &position,
-    G4bool useGroundStateBranch) const
+    G4bool useGroundStateBranch,
+    const G4ThreeVector &launchDirection) const
 {
   auto *particleTable = G4ParticleTable::GetParticleTable();
   auto *ionTable = G4IonTable::GetIonTable();
@@ -1249,20 +1377,18 @@ void PrimaryGeneratorAction::GenerateReactionProducts(
     eLi7 = 0.840 * MeV;
   }
 
-  const G4ThreeVector dir = RandomUnitVector();
-
   // alpha
   fParticleGun->SetParticleDefinition(alphaDef);
   fParticleGun->SetParticleEnergy(eAlpha);
   fParticleGun->SetParticlePosition(position);
-  fParticleGun->SetParticleMomentumDirection(dir);
+  fParticleGun->SetParticleMomentumDirection(launchDirection);
   fParticleGun->GeneratePrimaryVertex(event);
 
   // Li7 in opposite direction
   fParticleGun->SetParticleDefinition(li7Def);
   fParticleGun->SetParticleEnergy(eLi7);
   fParticleGun->SetParticlePosition(position);
-  fParticleGun->SetParticleMomentumDirection(-dir);
+  fParticleGun->SetParticleMomentumDirection(-launchDirection);
   fParticleGun->GeneratePrimaryVertex(event);
 }
 
@@ -1291,11 +1417,16 @@ void PrimaryGeneratorAction::GeneratePrimaries(G4Event *event)
 
   // choose branch
   const G4bool useGroundStateBranch = (G4UniformRand() < 0.063);
+  fCurrentReactionBranch = useGroundStateBranch
+                               ? "ground_state"
+                               : "excited_state";
+  fCurrentLaunchDirection = RandomUnitVector();
 
   GenerateReactionProducts(
       event,
       fCurrentLocalCapturePosition,
-      useGroundStateBranch);
+      useGroundStateBranch,
+      fCurrentLaunchDirection);
   fCurrentReplayValid = true;
 
   --fRemainingReplaysForCurrentCapture;

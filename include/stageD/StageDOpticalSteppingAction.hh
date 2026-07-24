@@ -22,6 +22,7 @@ public:
   ~StageDOpticalSteppingAction() override;
 
   void UserSteppingAction(const G4Step *step) override;
+  void PrepareForNewRun();
 
 private:
   const DetectorConstruction *ResolveDetector() const;
@@ -30,6 +31,7 @@ private:
                                G4Track *track,
                                const DetectorConstruction *detector,
                                DetectorConstruction::Phase prePhase);
+  G4bool HandleHardPathLimits(G4Track *track);
   G4bool HandleLimitKills(const G4Step *step, G4Track *track);
 
 private:

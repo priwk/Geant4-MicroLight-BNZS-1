@@ -204,6 +204,8 @@ def execute_process(executable, build_dir, macro_arg, log_path, env, dry_run):
 def validate_stage_d_args(args):
     if args.max_placements < 0 or args.start_index < 0:
         raise SystemExit("--max-placements and --start-index must be >= 0")
+    if args.seed <= 0:
+        raise SystemExit("--seed must be > 0")
     if args.beam_on <= 0:
         raise SystemExit("--beam-on must be > 0")
     if args.wavelength_nm <= 0.0:
@@ -293,6 +295,7 @@ def build_stage_d_tasks(args, project_root, build_dir, placement_dir, macro_dir,
                 max_reentry=args.max_reentry,
                 max_steps=args.max_steps,
                 max_path_length_um=args.max_path_length_um,
+                random_seed=args.seed + args.start_index + idx,
             ),
             encoding="utf-8",
         )

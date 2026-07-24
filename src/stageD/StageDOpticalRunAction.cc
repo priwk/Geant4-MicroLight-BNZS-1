@@ -8,7 +8,10 @@
 #include "G4RunManager.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4ios.hh"
+#include "Randomize.hh"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -79,6 +82,27 @@ namespace
         static_cast<G4double>(value >> 11) * (1.0 / 9007199254740992.0);
     return unitValue < samplingRate;
   }
+
+  std::string SafePathComponent(const std::string &value)
+  {
+    std::string result = value.empty() ? "unset" : value;
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch)
+                   { return (std::isalnum(ch) || ch == '-' || ch == '_')
+                                ? static_cast<char>(ch)
+                                : '_'; });
+    return result;
+  }
+
+  std::uint64_t StableHash(const std::string &value)
+  {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : value)
+    {
+      hash ^= ch;
+      hash *= 1099511628211ULL;
+    }
+    return hash;
+  }
 }
 
 StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
@@ -94,6 +118,10 @@ StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
       fRatioTag(""),
       fPlacementFile(""),
       fPlacementStem(""),
+      fConfigurationTag(""),
+      fRunId(0),
+      fRandomSeed0(0),
+      fRandomSeed1(0),
       fAccumulator(),
       fReentryPortalSummary(),
       fReentryDiagnosticRowsWritten(0)
@@ -174,6 +202,47 @@ std::string StageDOpticalRunAction::MakeWavelengthTag() const
   return oss.str();
 }
 
+std::string StageDOpticalRunAction::MakeConfigurationTag() const
+{
+  if (fConfig == nullptr)
+    return "cfg_unknown";
+
+  std::ostringstream signature;
+  signature << std::setprecision(15)
+            << fConfig->stageD_source_mode << '|'
+            << fConfig->stageD_boundary_mode << '|'
+            << fConfig->stageD_reentry_mode << '|'
+            << fConfig->stageD_particle_reentry_mode << '|'
+            << fConfig->stageD_matrix_reentry_mode << '|'
+            << fConfig->stageD_scatter_metric << '|'
+            << fConfig->stageD_target_primary_scatter << '|'
+            << fConfig->stageD_theta_threshold_deg << '|'
+            << fConfig->stageD_max_reentry << '|'
+            << fConfig->stageD_max_steps << '|'
+            << fConfig->stageD_max_path_length_um << '|'
+            << fConfig->stageD_portal_nu << '|'
+            << fConfig->stageD_portal_nv << '|'
+            << fConfig->stageD_portal_margin_um << '|'
+            << fConfig->stageD_clearance_bin0_um << '|'
+            << fConfig->stageD_clearance_bin1_um << '|'
+            << fConfig->stageD_clearance_bin2_um << '|'
+            << fConfig->stageD_max_particle_reentry_trials << '|'
+            << fConfig->stageD_max_portal_fallback_level << '|'
+            << fConfig->opticalMatrixRIndex << '|'
+            << fConfig->opticalMatrixAbsLengthUm << '|'
+            << fConfig->opticalBnRIndex << '|'
+            << fConfig->opticalBnAbsLengthUm << '|'
+            << fConfig->opticalZnsRIndex << '|'
+            << fConfig->opticalZnsAbsLengthUm;
+
+  std::ostringstream tag;
+  tag << "source_" << SafePathComponent(fConfig->stageD_source_mode)
+      << "__boundary_" << SafePathComponent(fConfig->stageD_boundary_mode)
+      << "__cfg_" << std::hex << std::setw(12) << std::setfill('0')
+      << (StableHash(signature.str()) & 0xffffffffffffULL);
+  return tag.str();
+}
+
 std::string StageDOpticalRunAction::ResolveOutputDirectory() const
 {
   if (fConfig != nullptr && !fConfig->stageD_output_dir.empty())
@@ -184,7 +253,11 @@ std::string StageDOpticalRunAction::ResolveOutputDirectory() const
           "stageD_optical_homogenization" /
           fRatioTag /
           fPlacementStem /
-          MakeWavelengthTag())
+          MakeWavelengthTag() /
+          fConfigurationTag /
+          ("run_" + std::to_string(fRunId) +
+           "_seeds_" + std::to_string(fRandomSeed0) +
+           "_" + std::to_string(fRandomSeed1)))
       .string();
 }
 
@@ -282,6 +355,9 @@ void StageDOpticalRunAction::WriteEventHeader()
       << "num_reentry_ZnS,"
       << "num_reentry_matrix,"
       << "num_reentry_particle_q_mu,"
+      << "num_reentry_particle_q_only,"
+      << "num_reentry_particle_q_only_fallback,"
+      << "num_reentry_particle_volume_random,"
       << "num_reentry_matrix_clearance_portal,"
       << "num_reentry_fallback_same_bin,"
       << "num_reentry_fallback_adjacent_bin,"
@@ -371,6 +447,7 @@ void StageDOpticalRunAction::OpenOutputs()
                 ("Failed to open Stage D events CSV: " + fEventsCsvPath).c_str());
     return;
   }
+  fEventsCsv << std::setprecision(15);
 
   if (fConfig != nullptr && fConfig->stageD_write_reentry_diagnostics &&
       fConfig->stageD_max_diagnostic_rows > 0 &&
@@ -384,6 +461,7 @@ void StageDOpticalRunAction::OpenOutputs()
                   ("Failed to open Stage D re-entry diagnostics CSV: " + fReentryDiagnosticsCsvPath).c_str());
       return;
     }
+    fReentryDiagnosticsCsv << std::setprecision(15);
     WriteReentryDiagnosticsHeader();
   }
 
@@ -426,8 +504,6 @@ void StageDOpticalRunAction::WriteGeometryMetadataFile(
 
 void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
 {
-  (void)run;
-
   fAccumulator = StageDRunAccumulator{};
   fReentryPortalSummary = StageDReentryPortalSummary{};
   fReentryDiagnosticRowsWritten = 0;
@@ -441,6 +517,11 @@ void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
   fRatioTag = MakeRatioTag();
   fPlacementFile = detector ? detector->GetLoadedPlacementFileForRecord() : "unknown";
   fPlacementStem = MakePlacementStem();
+  fRunId = run != nullptr ? run->GetRunID() : 0;
+  const G4long *randomSeeds = G4Random::getTheSeeds();
+  fRandomSeed0 = randomSeeds != nullptr ? randomSeeds[0] : G4Random::getTheSeed();
+  fRandomSeed1 = randomSeeds != nullptr ? randomSeeds[1] : 0;
+  fConfigurationTag = MakeConfigurationTag();
   fOutputDir = ResolveOutputDirectory();
 
   OpenOutputs();
@@ -546,6 +627,9 @@ void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &ev
       << event.num_reentry_ZnS << ","
       << event.num_reentry_matrix << ","
       << event.num_reentry_particle_q_mu << ","
+      << event.num_reentry_particle_q_only << ","
+      << event.num_reentry_particle_q_only_fallback << ","
+      << event.num_reentry_particle_volume_random << ","
       << event.num_reentry_matrix_clearance_portal << ","
       << event.num_reentry_fallback_same_bin << ","
       << event.num_reentry_fallback_adjacent_bin << ","
@@ -678,6 +762,11 @@ void StageDOpticalRunAction::AccumulatePhotonEvent(
   acc.totalReentryZnS += event.num_reentry_ZnS;
   acc.totalReentryMatrix += event.num_reentry_matrix;
   acc.totalReentryParticleQMu += event.num_reentry_particle_q_mu;
+  acc.totalReentryParticleQOnly += event.num_reentry_particle_q_only;
+  acc.totalReentryParticleQOnlyFallback +=
+      event.num_reentry_particle_q_only_fallback;
+  acc.totalReentryParticleVolumeRandom +=
+      event.num_reentry_particle_volume_random;
   acc.totalReentryMatrixClearancePortal += event.num_reentry_matrix_clearance_portal;
   acc.totalReentryFallbackSameBin += event.num_reentry_fallback_same_bin;
   acc.totalReentryFallbackAdjacentBin += event.num_reentry_fallback_adjacent_bin;
@@ -755,6 +844,7 @@ void StageDOpticalRunAction::WriteSummaryFile() const
                 ("Failed to open Stage D summary CSV: " + fSummaryCsvPath).c_str());
     return;
   }
+  fout << std::setprecision(15);
 
   const auto &acc = fAccumulator;
   const G4long nPhotons = acc.nPhotons;
@@ -844,6 +934,11 @@ void StageDOpticalRunAction::WriteSummaryFile() const
   const G4long totalReentryZnS = acc.totalReentryZnS;
   const G4long totalReentryMatrix = acc.totalReentryMatrix;
   const G4long totalReentryParticleQMu = acc.totalReentryParticleQMu;
+  const G4long totalReentryParticleQOnly = acc.totalReentryParticleQOnly;
+  const G4long totalReentryParticleQOnlyFallback =
+      acc.totalReentryParticleQOnlyFallback;
+  const G4long totalReentryParticleVolumeRandom =
+      acc.totalReentryParticleVolumeRandom;
   const G4long totalReentryMatrixClearancePortal =
       acc.totalReentryMatrixClearancePortal;
   const G4long totalReentryFallbackSameBin = acc.totalReentryFallbackSameBin;
@@ -1078,6 +1173,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
   fout
       << "ratio,"
       << "placement_file,"
+      << "run_id,"
+      << "random_seed_0,"
+      << "random_seed_1,"
+      << "configuration_tag,"
       << "param_model,"
       << "primary_scatter_metric,"
       << "source_mode,"
@@ -1169,6 +1268,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << "total_reentry_ZnS,"
       << "total_reentry_matrix,"
       << "total_reentry_particle_q_mu,"
+      << "total_reentry_particle_q_only,"
+      << "total_reentry_particle_q_only_fallback,"
+      << "particle_q_only_fallback_fraction,"
+      << "total_reentry_particle_volume_random,"
       << "total_reentry_matrix_clearance_portal,"
       << "total_reentry_fallback_same_bin,"
       << "total_reentry_fallback_adjacent_bin,"
@@ -1231,6 +1334,10 @@ void StageDOpticalRunAction::WriteSummaryFile() const
   fout
       << CsvQuote(fRatioTag) << ","
       << CsvQuote(fPlacementFile) << ","
+      << fRunId << ","
+      << fRandomSeed0 << ","
+      << fRandomSeed1 << ","
+      << CsvQuote(fConfigurationTag) << ","
       << "GO_RVE,"
       << CsvQuote(PrimaryScatterMetricLabel(fConfig)) << ","
       << CsvQuote(fConfig ? fConfig->stageD_source_mode : "") << ","
@@ -1322,6 +1429,15 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << totalReentryZnS << ","
       << totalReentryMatrix << ","
       << totalReentryParticleQMu << ","
+      << totalReentryParticleQOnly << ","
+      << totalReentryParticleQOnlyFallback << ","
+      << (totalReentryParticleQMu + totalReentryParticleQOnlyFallback > 0
+              ? static_cast<G4double>(totalReentryParticleQOnlyFallback) /
+                    static_cast<G4double>(totalReentryParticleQMu +
+                                          totalReentryParticleQOnlyFallback)
+              : 0.0)
+      << ","
+      << totalReentryParticleVolumeRandom << ","
       << totalReentryMatrixClearancePortal << ","
       << totalReentryFallbackSameBin << ","
       << totalReentryFallbackAdjacentBin << ","
@@ -1400,6 +1516,7 @@ void StageDOpticalRunAction::WritePhaseFunctionFile() const
                 ("Failed to open Stage D phase function CSV: " + fPhaseFunctionCsvPath).c_str());
     return;
   }
+  fout << std::setprecision(15);
 
   const auto &counts = fAccumulator.phaseFunctionCounts;
   G4long totalCount = 0;

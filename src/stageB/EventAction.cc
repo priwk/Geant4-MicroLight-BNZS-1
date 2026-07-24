@@ -103,6 +103,27 @@ RunAction::CaptureAnchorRow EventAction::MakeCurrentCaptureAnchorRow() const
   row.bn_center_x_um = fCurrentSelectedBNCenter.x() / um;
   row.bn_center_y_um = fCurrentSelectedBNCenter.y() / um;
   row.bn_center_z_um = fCurrentSelectedBNCenter.z() / um;
+  row.bn_particle_id = fPrimaryAction
+                           ? fPrimaryAction->GetCurrentSelectedBNParticleId()
+                           : -1;
+  row.bn_radius_class_id = fPrimaryAction
+                               ? fPrimaryAction->GetCurrentSelectedBNRadiusClassId()
+                               : -1;
+  row.bn_radius_um = fPrimaryAction
+                         ? fPrimaryAction->GetCurrentSelectedBNRadius() / um
+                         : 0.0;
+  row.bn_image_ix = fPrimaryAction ? fPrimaryAction->GetCurrentBNImageIx() : 0;
+  row.bn_image_iy = fPrimaryAction ? fPrimaryAction->GetCurrentBNImageIy() : 0;
+  row.bn_image_iz = fPrimaryAction ? fPrimaryAction->GetCurrentBNImageIz() : 0;
+  row.reaction_branch = fPrimaryAction
+                            ? fPrimaryAction->GetCurrentReactionBranch()
+                            : "";
+  const G4ThreeVector launchDirection = fPrimaryAction
+                                            ? fPrimaryAction->GetCurrentLaunchDirection()
+                                            : G4ThreeVector();
+  row.launch_dir_x = launchDirection.x();
+  row.launch_dir_y = launchDirection.y();
+  row.launch_dir_z = launchDirection.z();
   row.alphali_replay_index = fCurrentAlphaLiReplayIndex;
   row.alphali_replay_count = fCurrentAlphaLiReplayCount;
   row.trajectory_weight = (fCurrentAlphaLiReplayCount > 0)

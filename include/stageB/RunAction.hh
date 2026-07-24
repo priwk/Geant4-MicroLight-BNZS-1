@@ -9,6 +9,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <unordered_set>
 
 class G4Run;
 class PrimaryGeneratorAction;
@@ -83,6 +84,16 @@ public:
     G4double bn_center_x_um = 0.0;
     G4double bn_center_y_um = 0.0;
     G4double bn_center_z_um = 0.0;
+    G4int bn_particle_id = -1;
+    G4int bn_radius_class_id = -1;
+    G4double bn_radius_um = 0.0;
+    G4int bn_image_ix = 0;
+    G4int bn_image_iy = 0;
+    G4int bn_image_iz = 0;
+    std::string reaction_branch;
+    G4double launch_dir_x = 0.0;
+    G4double launch_dir_y = 0.0;
+    G4double launch_dir_z = 0.0;
     G4int alphali_replay_index = 0;
     G4int alphali_replay_count = 1;
     G4double trajectory_weight = 1.0;
@@ -177,6 +188,7 @@ private:
   std::string fBoundaryStopSummaryCsvPath;
   std::string fCurrentOutputInputPath;
   std::map<BoundarySummaryKey, BoundarySummary> fBoundarySummaries;
+  std::unordered_set<std::string> fInitializedOutputFiles;
 };
 
 #endif

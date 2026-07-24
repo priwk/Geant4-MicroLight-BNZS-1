@@ -28,6 +28,10 @@ public:
   ~ModeSteppingAction() override;
 
   void UserSteppingAction(const G4Step *step) override;
+  StageDOpticalSteppingAction *GetStageDSteppingAction() const
+  {
+    return fStageDSteppingAction;
+  }
 
 private:
   StageDOpticalSteppingAction *EnsureStageDSteppingAction();

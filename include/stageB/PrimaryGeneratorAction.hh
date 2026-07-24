@@ -13,6 +13,7 @@
 
 class G4Event;
 class AnalysisConfig;
+class DetectorConstruction;
 
 struct CaptureRecord
 {
@@ -52,6 +53,14 @@ public:
   G4int GetCurrentAlphaLiReplayIndex() const { return fCurrentAlphaLiReplayIndex; }
   G4int GetCurrentAlphaLiReplayCount() const { return fAlphaLiReplayPerCapture; }
   G4double GetCurrentTrajectoryWeight() const;
+  G4int GetCurrentSelectedBNParticleId() const { return fCurrentSelectedBNParticleId; }
+  G4int GetCurrentSelectedBNRadiusClassId() const { return fCurrentSelectedBNRadiusClassId; }
+  G4double GetCurrentSelectedBNRadius() const { return fCurrentSelectedBNRadius; }
+  G4int GetCurrentBNImageIx() const { return fCurrentBNImageIx; }
+  G4int GetCurrentBNImageIy() const { return fCurrentBNImageIy; }
+  G4int GetCurrentBNImageIz() const { return fCurrentBNImageIz; }
+  const std::string &GetCurrentReactionBranch() const { return fCurrentReactionBranch; }
+  const G4ThreeVector &GetCurrentLaunchDirection() const { return fCurrentLaunchDirection; }
   G4bool HasValidCurrentReplay() const { return fCurrentReplayValid; }
   std::string MakeCurrentPhysicalEventUid() const;
   std::string MakeCurrentSourceEventUid() const;
@@ -86,10 +95,11 @@ private:
   // ---- BN selection and point sampling ----
   G4bool SelectBNSphereForTargetZ(
       G4double targetZ,
+      G4int &chosenSphereIndex,
       G4ThreeVector &chosenCenter,
       G4double &chosenRadius,
       G4double &usedZ,
-      G4bool &usedFallback) const;
+      G4bool &usedFallback);
 
   G4ThreeVector SamplePointInSphereSlice(
       const G4ThreeVector &center,
@@ -103,9 +113,13 @@ private:
       G4ThreeVector &point) const;
 
   G4bool SampleBulkCapturePoint(
+      G4int &chosenSphereIndex,
       G4ThreeVector &chosenCenter,
       G4ThreeVector &capturePoint,
-      G4bool &usedFallback) const;
+      G4bool &usedFallback);
+
+  void EnsureBNSamplingCache();
+  G4int BNSamplingZBin(G4double z) const;
 
   G4ThreeVector SamplePointInSphereVolume(
       const G4ThreeVector &center,
@@ -115,7 +129,8 @@ private:
   void GenerateReactionProducts(
       G4Event *event,
       const G4ThreeVector &position,
-      G4bool useGroundStateBranch) const;
+      G4bool useGroundStateBranch,
+      const G4ThreeVector &launchDirection) const;
 
 private:
   AnalysisConfig *fConfig;
@@ -150,6 +165,22 @@ private:
   std::string fCurrentSurfaceMode;
   G4double fCurrentTargetLocalZ;
   G4double fCurrentUsedLocalZ;
+  G4int fCurrentSelectedBNParticleId;
+  G4int fCurrentSelectedBNRadiusClassId;
+  G4double fCurrentSelectedBNRadius;
+  G4int fCurrentBNImageIx;
+  G4int fCurrentBNImageIy;
+  G4int fCurrentBNImageIz;
+  std::string fCurrentReactionBranch;
+  G4ThreeVector fCurrentLaunchDirection;
+
+  const DetectorConstruction *fBNSamplingDetectorIdentity;
+  std::size_t fBNSamplingSphereCount;
+  G4double fBNSamplingBoxZ;
+  G4double fBNSamplingZBinWidth;
+  G4int fBNSamplingZBinCount;
+  std::vector<G4double> fBNVolumeCdf;
+  std::vector<std::vector<G4int>> fBNZBins;
 };
 
 #endif

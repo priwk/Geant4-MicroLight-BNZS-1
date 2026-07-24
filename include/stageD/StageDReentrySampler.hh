@@ -135,6 +135,9 @@ private:
                                           G4double q,
                                           G4ThreeVector &newPosition,
                                           ReentryDiagnostics &diag) const;
+  G4bool SampleParticleVolumeUniformReentry(const ReentryContext &ctx,
+                                            G4ThreeVector &newPosition,
+                                            ReentryDiagnostics &diag) const;
   G4bool SampleMatrixClearanceBinnedPortalReentry(const ReentryContext &ctx,
                                                   G4ThreeVector &newPosition,
                                                   ReentryDiagnostics &diag) const;

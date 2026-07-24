@@ -97,7 +97,10 @@ G4bool StageDReentrySampler::SampleReentry(const ReentryContext &ctx,
       return SampleParticleSphereQMuReentry(ctx, newPosition, diag);
     }
 
-    if (mode == "same_phase_rho_over_R" || mode == "same_phase_random")
+    if (mode == "same_phase_random")
+      return SampleParticleVolumeUniformReentry(ctx, newPosition, diag);
+
+    if (mode == "same_phase_rho_over_R")
     {
       const MicroSphere *oldSphere = FindContainingSphereOnly(ctx.phase, ctx.exitInsidePoint);
       G4ThreeVector oldPosition = ctx.exitInsidePoint;
@@ -120,16 +123,8 @@ G4bool StageDReentrySampler::SampleReentry(const ReentryContext &ctx,
       const G4bool ok = SampleParticleSphereQOnlyReentry(ctx, oldSphere, q, newPosition, diag);
       if (ok)
       {
-        if (mode == "same_phase_rho_over_R")
-        {
-          diag.strategy = "particle_sphere_q_only";
-          diag.fallbackLevel = "legacy_q_mode";
-        }
-        else
-        {
-          diag.strategy = "particle_same_phase_random_debug";
-          diag.fallbackLevel = "legacy_random_mode";
-        }
+        diag.strategy = "particle_sphere_q_only";
+        diag.fallbackLevel = "configured_q_only";
       }
       return ok;
     }
@@ -445,6 +440,46 @@ G4bool StageDReentrySampler::SampleParticleSphereQOnlyReentry(
     diag.entryPhase = ctx.phase;
     diag.particleQEntry = rhoEntry / std::max(newSphere.radius, kBoundaryEpsilon);
     diag.particleMuEntry = std::clamp(ctx.oldDir.unit().dot(radial), -1.0, 1.0);
+    return true;
+  }
+
+  return false;
+}
+
+G4bool StageDReentrySampler::SampleParticleVolumeUniformReentry(
+    const ReentryContext &ctx,
+    G4ThreeVector &newPosition,
+    ReentryDiagnostics &diag) const
+{
+  diag.strategy = "particle_same_phase_volume_random";
+  diag.fallbackLevel = "none";
+
+  const G4int maxTrials = std::max(1, fMaxParticleReentryTrials);
+  for (G4int trial = 0; trial < maxTrials; ++trial)
+  {
+    ++diag.trials;
+    const G4int sphereId = SampleWeightedSamePhaseSphereId(ctx.phase);
+    if (sphereId < 0)
+      break;
+
+    const MicroSphere &sphere = fSpheres[static_cast<std::size_t>(sphereId)];
+    const G4ThreeVector radialDirection = RandomUnitVector();
+    const G4double q = std::cbrt(G4UniformRand());
+    G4ThreeVector candidate =
+        sphere.center + q * sphere.radius * radialDirection;
+    if (!ClampInsideSameSphereRoundoffOnly(candidate, sphere))
+      continue;
+
+    candidate = fDetector->WrapToPrimaryCell(candidate);
+    if (!ValidatePhase(candidate, ctx.phase))
+      continue;
+
+    newPosition = candidate;
+    diag.entryPoint = candidate;
+    diag.entryPhase = ctx.phase;
+    diag.particleQEntry = q;
+    diag.particleMuEntry = std::clamp(
+        ctx.oldDir.unit().dot(radialDirection), -1.0, 1.0);
     return true;
   }
 

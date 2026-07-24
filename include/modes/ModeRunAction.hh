@@ -10,6 +10,7 @@ class RunAction;
 class StageARunAction;
 class PrimaryGeneratorAction;
 class StageDOpticalRunAction;
+class StageDOpticalSteppingAction;
 
 class ModeRunAction : public G4UserRunAction
 {
@@ -25,6 +26,7 @@ public:
   StageARunAction *GetStageARunAction() const;
   StageDOpticalRunAction *GetStageDRunAction() const;
   void SetStageBPrimaryAction(PrimaryGeneratorAction *primaryAction);
+  void SetStageDSteppingAction(StageDOpticalSteppingAction *steppingAction);
 
 private:
   AnalysisConfig *fConfig;
@@ -33,6 +35,7 @@ private:
   StageARunAction *fStageARunAction;
   StageDOpticalRunAction *fStageDRunAction;
   PrimaryGeneratorAction *fStageBPrimaryAction;
+  StageDOpticalSteppingAction *fStageDSteppingAction;
 };
 
 #endif

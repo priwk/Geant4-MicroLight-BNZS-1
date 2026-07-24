@@ -269,12 +269,14 @@ def macro_text(
     max_reentry: int,
     max_steps: int,
     max_path_length_um: float,
+    random_seed: int,
 ):
     return "\n".join(
         [
             "/run/verbose 0",
             "/event/verbose 0",
             "/tracking/verbose 0",
+            f"/random/setSeeds {random_seed} {random_seed + 1}",
             "",
             "/cfg/setRunMode StageD_OpticalHomogenization",
             f"/cfg/setWeightRatio {bn_wt} {zns_wt}",
@@ -304,6 +306,8 @@ def main():
     args = parse_args()
     if args.max_placements < 0 or args.start_index < 0:
         raise SystemExit("--max-placements and --start-index must be >= 0")
+    if args.seed <= 0:
+        raise SystemExit("--seed must be > 0")
     if args.beam_on <= 0:
         raise SystemExit("--beam-on must be > 0")
     if args.wavelength_nm <= 0.0:
@@ -409,6 +413,7 @@ def main():
                 max_reentry=args.max_reentry,
                 max_steps=args.max_steps,
                 max_path_length_um=args.max_path_length_um,
+                random_seed=args.seed + args.start_index + idx,
             ),
             encoding="utf-8",
         )

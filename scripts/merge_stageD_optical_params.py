@@ -21,15 +21,10 @@ def stddev(values):
 def load_rows(base_dir: Path, ratio: str):
     root = base_dir / "Output" / "stageD_optical_homogenization" / ratio
     rows = []
-    for path in sorted(root.glob("*/stageD_summary.csv")) + sorted(root.glob("*/*/stageD_summary.csv")):
-        with path.open(newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                row["_path"] = str(path)
-                rows.append(row)
-    if rows:
-        return rows
-    for path in sorted(root.glob("*/optical_homogenization_summary.csv")):
+    summary_paths = sorted(root.rglob("stageD_summary.csv"))
+    if not summary_paths:
+        summary_paths = sorted(root.rglob("optical_homogenization_summary.csv"))
+    for path in summary_paths:
         with path.open(newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -87,6 +82,7 @@ def row_config_signature(row):
         row.get("source_mode", ""),
         row.get("boundary_mode", ""),
         row.get("reentry_mode", ""),
+        row.get("particle_reentry_mode", ""),
         row.get("matrix_reentry_mode", ""),
         row.get("scatter_metric", ""),
         row.get("target_primary_scatter", ""),
@@ -374,6 +370,7 @@ def main():
                 source_mode,
                 boundary_mode,
                 reentry_mode,
+                particle_reentry_mode,
                 matrix_reentry_mode,
                 scatter_metric,
                 target_primary_scatter,
@@ -390,7 +387,7 @@ def main():
                 "  "
                 f"count={count} "
                 f"source={source_mode} boundary={boundary_mode} "
-                f"reentry={reentry_mode}/{matrix_reentry_mode} "
+                f"reentry={reentry_mode}/{particle_reentry_mode}/{matrix_reentry_mode} "
                 f"scatter_metric={scatter_metric} target_primary_scatter={target_primary_scatter} "
                 f"theta={theta_threshold_deg} wavelength={wavelength_nm} "
                 f"optical=({matrix_n},{matrix_abs_um}; {bn_n},{bn_abs_um}; {zns_n},{zns_abs_um})"

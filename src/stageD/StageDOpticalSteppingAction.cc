@@ -513,6 +513,14 @@ namespace
   {
     if (diag.strategy == "particle_sphere_q_mu")
       ++event.num_reentry_particle_q_mu;
+    else if (diag.strategy == "particle_sphere_q_only")
+    {
+      ++event.num_reentry_particle_q_only;
+      if (diag.fallbackLevel == "q_only")
+        ++event.num_reentry_particle_q_only_fallback;
+    }
+    else if (diag.strategy == "particle_same_phase_volume_random")
+      ++event.num_reentry_particle_volume_random;
     else if (diag.strategy == "matrix_clearance_binned_portal")
       ++event.num_reentry_matrix_clearance_portal;
     else if (diag.strategy == "matrix_random_debug")
@@ -591,6 +599,14 @@ StageDOpticalSteppingAction::StageDOpticalSteppingAction(
 StageDOpticalSteppingAction::~StageDOpticalSteppingAction()
 {
   delete fReentrySampler;
+}
+
+void StageDOpticalSteppingAction::PrepareForNewRun()
+{
+  delete fReentrySampler;
+  fReentrySampler = nullptr;
+  fDetector = nullptr;
+  fBoundaryProcess = nullptr;
 }
 
 const DetectorConstruction *StageDOpticalSteppingAction::ResolveDetector() const
@@ -882,6 +898,24 @@ G4bool StageDOpticalSteppingAction::HandleLimitKills(const G4Step *step, G4Track
     return true;
   }
 
+  if (HandleHardPathLimits(track))
+    return true;
+
+  if (track->GetTrackStatus() == fStopAndKill &&
+      event.final_status == "in_progress")
+  {
+    fEventAction->SetFinalStatus("lost", false);
+  }
+
+  return false;
+}
+
+G4bool StageDOpticalSteppingAction::HandleHardPathLimits(G4Track *track)
+{
+  if (fConfig == nullptr || fEventAction == nullptr || track == nullptr)
+    return false;
+
+  auto &event = fEventAction->MutableCurrentEvent();
   if (event.num_steps >= fConfig->stageD_max_steps)
   {
     fEventAction->SetFinalStatus("max_steps", false);
@@ -894,12 +928,6 @@ G4bool StageDOpticalSteppingAction::HandleLimitKills(const G4Step *step, G4Track
     fEventAction->SetFinalStatus("max_path_length", false);
     track->SetTrackStatus(fStopAndKill);
     return true;
-  }
-
-  if (track->GetTrackStatus() == fStopAndKill &&
-      event.final_status == "in_progress")
-  {
-    fEventAction->SetFinalStatus("lost", false);
   }
 
   return false;
@@ -956,6 +984,9 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
 
   if (isOuterRveBoundary)
   {
+    if (HandleHardPathLimits(track))
+      return;
+
     ++event.num_outer_boundary_hits;
     if (fConfig == nullptr || fConfig->stageD_boundary_mode != "periodic_wrap")
       AccumulateOuterBoundaryStatus(event, boundaryStatus);

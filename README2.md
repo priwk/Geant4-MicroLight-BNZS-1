@@ -239,7 +239,8 @@ python3 stageD_run_batch.py \
 单个 run 输出：
 
 ```text
-Output/stageD_optical_homogenization/<ratio>/<placement_stem>/
+Output/stageD_optical_homogenization/<ratio>/<placement_stem>/<wavelength>/
+  <source>__<boundary>__<config_hash>/run_<run_id>_seeds_<seed0>_<seed1>/
 ```
 
 其中主要文件：
@@ -304,7 +305,8 @@ logs/stageD/<ratio>/
 单个 placement 的：
 
 ```text
-Output/stageD_optical_homogenization/<ratio>/<placement>/optical_homogenization_summary.csv
+Output/stageD_optical_homogenization/<ratio>/<placement>/<wavelength>/
+  <config>/<run>/optical_homogenization_summary.csv
 ```
 
 它给的是这个 placement 的 raw 参数：

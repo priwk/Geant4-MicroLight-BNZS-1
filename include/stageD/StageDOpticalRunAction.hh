@@ -36,6 +36,7 @@ private:
   std::string MakeRatioTag() const;
   std::string MakePlacementStem() const;
   std::string MakeWavelengthTag() const;
+  std::string MakeConfigurationTag() const;
   std::string ResolveOutputDirectory() const;
   void OpenOutputs();
   void WriteEventHeader();
@@ -57,6 +58,10 @@ private:
   std::string fRatioTag;
   std::string fPlacementFile;
   std::string fPlacementStem;
+  std::string fConfigurationTag;
+  G4int fRunId;
+  G4long fRandomSeed0;
+  G4long fRandomSeed1;
   StageDRunAccumulator fAccumulator;
   StageDReentryPortalSummary fReentryPortalSummary;
   G4long fReentryDiagnosticRowsWritten;
