@@ -17,9 +17,6 @@
 #include <string>
 #include <sstream>
 #include <filesystem>
-#include <fstream>
-#include <unordered_map>
-#include <vector>
 
 namespace
 {
@@ -52,8 +49,6 @@ namespace
       return "uniform_ZnS";
     if (value == "uniform_all_phase" || value == "uniformallphase")
       return "uniform_all_phase";
-    if (value == "from_zns_step_sources" || value == "fromznsstepsources")
-      return "from_zns_step_sources";
     return "";
   }
 
@@ -62,6 +57,8 @@ namespace
     const std::string value = ToLowerCopy(Trim(raw));
     if (value == "escape")
       return "escape";
+    if (value == "periodic_wrap" || value == "periodicwrap")
+      return "periodic_wrap";
     if (value == "same_phase_reentry" || value == "samephasereentry")
       return "same_phase_reentry";
     return "";
@@ -136,19 +133,13 @@ namespace
     if (v == "stageb_replayalphali" || v == "stageb" || v == "b")
       return RunMode::StageB_ReplayAlphaLi;
 
-    if (v == "stagec_opticalstub" || v == "stagec" || v == "c")
-      return RunMode::StageC_OpticalStub;
-
-    if (v == "stagec_opticalrve" || v == "opticalrve")
-      return RunMode::StageC_OpticalRVE;
-
     if (v == "staged_opticalhomogenization" || v == "staged" || v == "d")
       return RunMode::StageD_OpticalHomogenization;
 
     G4Exception("AnalysisMessenger::ParseRunModeOrThrow",
                 "BNZS_CFG_001", FatalException,
                 ("Unknown run mode: " + raw +
-                 ". Supported values: StageA_NeutronPatch, StageB_ReplayAlphaLi, StageC_OpticalStub, StageC_OpticalRVE, StageD_OpticalHomogenization")
+                 ". Supported values: StageA_NeutronPatch, StageB_ReplayAlphaLi, StageD_OpticalHomogenization")
                     .c_str());
 
     return RunMode::StageB_ReplayAlphaLi;
@@ -173,109 +164,6 @@ namespace
     return bnWt > 0.0 && znsWt > 0.0;
   }
 
-  std::vector<std::string> SplitCsvLine(const std::string &line)
-  {
-    std::vector<std::string> fields;
-    std::stringstream ss(line);
-    std::string field;
-    while (std::getline(ss, field, ','))
-    {
-      fields.push_back(field);
-    }
-    return fields;
-  }
-
-  bool ReadFirstStageCSourceMetadata(const std::string &path,
-                                     G4double &bnWt,
-                                     G4double &znsWt,
-                                     std::string &placementFile)
-  {
-    std::ifstream fin(path.c_str());
-    if (!fin)
-      return false;
-
-    std::string headerLine;
-    if (!std::getline(fin, headerLine))
-      return false;
-
-    const auto headers = SplitCsvLine(headerLine);
-    std::unordered_map<std::string, std::size_t> index;
-    for (std::size_t i = 0; i < headers.size(); ++i)
-    {
-      index[headers[i]] = i;
-    }
-
-    const auto bnIt = index.find("bn_wt");
-    const auto znsIt = index.find("zns_wt");
-    const auto placementIt = index.find("placement_file");
-    if (bnIt == index.end() || znsIt == index.end() || placementIt == index.end())
-      return false;
-
-    std::string line;
-    while (std::getline(fin, line))
-    {
-      if (line.empty())
-        continue;
-
-      const auto fields = SplitCsvLine(line);
-      if (fields.size() <= std::max({bnIt->second, znsIt->second, placementIt->second}))
-        continue;
-
-      try
-      {
-        bnWt = std::stod(fields[bnIt->second]);
-        znsWt = std::stod(fields[znsIt->second]);
-      }
-      catch (...)
-      {
-        return false;
-      }
-
-      placementFile = fields[placementIt->second];
-      return bnWt > 0.0 && znsWt > 0.0 && !placementFile.empty();
-    }
-
-    return false;
-  }
-
-  bool SamePlacementFile(const std::string &lhs, const std::string &rhs)
-  {
-    if (lhs == rhs)
-      return true;
-
-    namespace fs = std::filesystem;
-    std::error_code ecL;
-    std::error_code ecR;
-    const fs::path lhsPath(lhs);
-    const fs::path rhsPath(rhs);
-    const fs::path lhsCanon = fs::weakly_canonical(lhsPath, ecL);
-    const fs::path rhsCanon = fs::weakly_canonical(rhsPath, ecR);
-    if (!ecL && !ecR && lhsCanon == rhsCanon)
-      return true;
-
-    // Useful when one path is absolute from the VM shared mount and the other
-    // is relative from build/. Placement basenames repeat across ratios, so
-    // require both ratio folder and filename to match.
-    return lhsPath.filename() == rhsPath.filename() &&
-           lhsPath.parent_path().filename() == rhsPath.parent_path().filename();
-  }
-
-  void RequireMatchingPlacement(const std::string &requested,
-                                const std::string &sourcePlacement)
-  {
-    if (requested.empty() || sourcePlacement.empty())
-      return;
-
-    if (SamePlacementFile(requested, sourcePlacement))
-      return;
-
-    G4Exception("AnalysisMessenger::RequireMatchingPlacement",
-                "BNZS_CFG_007", FatalException,
-                ("Stage C placement mismatch. The ZnS source CSV was generated with placement_file="
-                 + sourcePlacement + " but requested placementFilePath=" + requested
-                 + ". Do not mix placements for StageC_OpticalRVE.")
-                    .c_str());
-  }
 } // namespace
 
 AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
@@ -285,12 +173,11 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
       fRunModeCmd(nullptr),
       fCaptureCsvCmd(nullptr),
       fCaptureDirCmd(nullptr),
-      fOpticalSourceCmd(nullptr),
-      fSourceSamplingCmd(nullptr),
       fPlacementFileCmd(nullptr),
+      fPlacementGeometryModeCmd(nullptr),
+      fPeriodicImagesFileCmd(nullptr),
       fUseRandomPlacementCmd(nullptr),
       fAllowThicknessEqualCmd(nullptr),
-      fWriteStageCPhotonCsvCmd(nullptr),
       fStageDDir(nullptr),
       fStageDWavelengthNmCmd(nullptr),
       fStageDSourceModeCmd(nullptr),
@@ -302,7 +189,6 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
       fStageDMaxStepsCmd(nullptr),
       fStageDMaxPathLengthUmCmd(nullptr),
       fStageDOutputDirCmd(nullptr),
-      fOpticalSamplesPerStepCmd(nullptr),
       fOpticalParamsCmd(nullptr),
       fWeightRatioCmd(nullptr)
 {
@@ -311,7 +197,7 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
 
   fRunModeCmd = new G4UIcmdWithAString("/cfg/setRunMode", this);
   fRunModeCmd->SetGuidance("Set analysis run mode.");
-  fRunModeCmd->SetGuidance("Supported: StageA_NeutronPatch | StageB_ReplayAlphaLi | StageC_OpticalStub | StageC_OpticalRVE | StageD_OpticalHomogenization");
+  fRunModeCmd->SetGuidance("Supported: StageA_NeutronPatch | StageB_ReplayAlphaLi | StageD_OpticalHomogenization");
   fRunModeCmd->SetParameterName("runMode", false);
   fRunModeCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
@@ -325,37 +211,30 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fCaptureDirCmd->SetParameterName("captureInputDir", false);
   fCaptureDirCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
-  fOpticalSourceCmd = new G4UIcmdWithAString("/cfg/setOpticalSourceCsv", this);
-  fOpticalSourceCmd->SetGuidance("Set explicit Stage C ZnS step source CSV path.");
-  fOpticalSourceCmd->SetGuidance("If possible, BN/ZnS ratio and placement file are inferred from the first data row.");
-  fOpticalSourceCmd->SetParameterName("opticalSourcePath", false);
-  fOpticalSourceCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
-
-  fSourceSamplingCmd = new G4UIcmdWithAString("/cfg/setSourceSampling", this);
-  fSourceSamplingCmd->SetGuidance("Set Stage C source sampling: uniformAlongStep or midpoint.");
-  fSourceSamplingCmd->SetParameterName("sourceSampling", false);
-  fSourceSamplingCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
-
   fPlacementFileCmd = new G4UIcmdWithAString("/cfg/setPlacementFile", this);
   fPlacementFileCmd->SetGuidance("Set explicit placement CSV path for geometry construction.");
   fPlacementFileCmd->SetParameterName("placementFilePath", false);
-  fPlacementFileCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fPlacementFileCmd->AvailableForStates(G4State_PreInit);
+
+  fPlacementGeometryModeCmd = new G4UIcmdWithAString("/cfg/setPlacementGeometryMode", this);
+  fPlacementGeometryModeCmd->SetGuidance("Set placement geometry mode: pbc_clipped | primary_only.");
+  fPlacementGeometryModeCmd->SetParameterName("placementGeometryMode", false);
+  fPlacementGeometryModeCmd->AvailableForStates(G4State_PreInit);
+
+  fPeriodicImagesFileCmd = new G4UIcmdWithAString("/cfg/setPeriodicImagesCsv", this);
+  fPeriodicImagesFileCmd->SetGuidance("Override the periodic images CSV for a format_version=3 placement.");
+  fPeriodicImagesFileCmd->SetParameterName("periodicImagesFilePath", false);
+  fPeriodicImagesFileCmd->AvailableForStates(G4State_PreInit);
 
   fUseRandomPlacementCmd = new G4UIcmdWithABool("/cfg/setUseRandomPlacement", this);
   fUseRandomPlacementCmd->SetGuidance("Enable random placement selection from the current BN:ZnS ratio folder.");
   fUseRandomPlacementCmd->SetParameterName("useRandomPlacement", false);
-  fUseRandomPlacementCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fUseRandomPlacementCmd->AvailableForStates(G4State_PreInit);
 
   fAllowThicknessEqualCmd = new G4UIcmdWithABool("/cfg/setAllowThicknessEqualLocalPatch", this);
   fAllowThicknessEqualCmd->SetGuidance("Allow input thickness == local patch thickness in Stage B.");
   fAllowThicknessEqualCmd->SetParameterName("allowEqual", false);
   fAllowThicknessEqualCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
-
-  fWriteStageCPhotonCsvCmd = new G4UIcmdWithABool("/cfg/setWriteStageCPhotonCsv", this);
-  fWriteStageCPhotonCsvCmd->SetGuidance("Enable or disable Stage C per-photon CSV output.");
-  fWriteStageCPhotonCsvCmd->SetGuidance("Default is false to avoid very large output files.");
-  fWriteStageCPhotonCsvCmd->SetParameterName("writePhotonCsv", false);
-  fWriteStageCPhotonCsvCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
   fStageDDir = new G4UIdirectory("/cfg/stageD/");
   fStageDDir->SetGuidance("Stage D optical homogenization configuration.");
@@ -367,12 +246,12 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fStageDWavelengthNmCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
   fStageDSourceModeCmd = new G4UIcmdWithAString("/cfg/stageD/setSourceMode", this);
-  fStageDSourceModeCmd->SetGuidance("Set Stage D source mode: uniform_ZnS | uniform_all_phase | from_zns_step_sources.");
+  fStageDSourceModeCmd->SetGuidance("Set Stage D source mode: uniform_ZnS | uniform_all_phase.");
   fStageDSourceModeCmd->SetParameterName("sourceMode", false);
   fStageDSourceModeCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
   fStageDBoundaryModeCmd = new G4UIcmdWithAString("/cfg/stageD/setBoundaryMode", this);
-  fStageDBoundaryModeCmd->SetGuidance("Set Stage D boundary mode: escape | same_phase_reentry.");
+  fStageDBoundaryModeCmd->SetGuidance("Set Stage D boundary mode: periodic_wrap | escape | same_phase_reentry.");
   fStageDBoundaryModeCmd->SetParameterName("boundaryMode", false);
   fStageDBoundaryModeCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
@@ -473,17 +352,8 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fStageDMaxPortalFallbackLevelCmd->SetRange("maxPortalFallbackLevel>=0");
   fStageDMaxPortalFallbackLevelCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
-  fOpticalSamplesPerStepCmd = new G4UIcommand("/cfg/setSamplePhotonsPerStep", this);
-  fOpticalSamplesPerStepCmd->SetGuidance("Set Stage C sampled optical photons per ZnS step.");
-  fOpticalSamplesPerStepCmd->SetGuidance("Each sampled photon weight is n_photon_step / N_sample_photons_per_step.");
-
-  auto *sampleParam = new G4UIparameter("nSamples", 'i', false);
-  sampleParam->SetGuidance("Positive integer sample count per source step.");
-  fOpticalSamplesPerStepCmd->SetParameter(sampleParam);
-  fOpticalSamplesPerStepCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
-
   fOpticalParamsCmd = new G4UIcommand("/cfg/setOpticalParams", this);
-  fOpticalParamsCmd->SetGuidance("Set Stage C optical material parameters.");
+  fOpticalParamsCmd->SetGuidance("Set optical material parameters used by Stage D.");
   fOpticalParamsCmd->SetGuidance("Usage: /cfg/setOpticalParams <matrix_n> <matrix_abs_um> <bn_n> <bn_abs_um> <zns_n> <zns_abs_um>");
 
   auto *matrixNParam = new G4UIparameter("matrixRIndex", 'd', false);
@@ -519,8 +389,6 @@ AnalysisMessenger::~AnalysisMessenger()
 {
   delete fWeightRatioCmd;
   delete fOpticalParamsCmd;
-  delete fOpticalSamplesPerStepCmd;
-  delete fWriteStageCPhotonCsvCmd;
   delete fStageDOutputDirCmd;
   delete fStageDMaxPortalFallbackLevelCmd;
   delete fStageDMaxParticleReentryTrialsCmd;
@@ -541,9 +409,9 @@ AnalysisMessenger::~AnalysisMessenger()
   delete fStageDDir;
   delete fAllowThicknessEqualCmd;
   delete fUseRandomPlacementCmd;
+  delete fPeriodicImagesFileCmd;
+  delete fPlacementGeometryModeCmd;
   delete fPlacementFileCmd;
-  delete fSourceSamplingCmd;
-  delete fOpticalSourceCmd;
   delete fCaptureDirCmd;
   delete fCaptureCsvCmd;
   delete fRunModeCmd;
@@ -614,71 +482,9 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
     return;
   }
 
-  if (command == fOpticalSourceCmd)
-  {
-    fConfig->opticalSourcePath = Trim(newValue);
-
-    G4double sourceBnWt = 0.0;
-    G4double sourceZnsWt = 0.0;
-    std::string sourcePlacementFile;
-    if (ReadFirstStageCSourceMetadata(fConfig->opticalSourcePath,
-                                      sourceBnWt,
-                                      sourceZnsWt,
-                                      sourcePlacementFile))
-    {
-      fConfig->bnWt = sourceBnWt;
-      fConfig->znsWt = sourceZnsWt;
-      RequireMatchingPlacement(fConfig->placementFilePath, sourcePlacementFile);
-      fConfig->placementFilePath = sourcePlacementFile;
-      fConfig->useRandomPlacement = false;
-
-      G4cout << "[AnalysisMessenger] inferred Stage C geometry from optical source:"
-             << " BN:ZnS=" << fConfig->bnWt << ":" << fConfig->znsWt
-             << " placement=" << fConfig->placementFilePath
-             << G4endl;
-    }
-
-    G4cout << "[AnalysisMessenger] opticalSourcePath set to "
-           << fConfig->opticalSourcePath
-           << G4endl;
-    return;
-  }
-
-  if (command == fSourceSamplingCmd)
-  {
-    const std::string lower = ToLowerCopy(Trim(newValue));
-    if (lower != "uniformalongstep" && lower != "midpoint")
-    {
-      G4Exception("AnalysisMessenger::SetNewValue",
-                  "BNZS_CFG_005", FatalException,
-                  "Stage C sourceSampling must be uniformAlongStep or midpoint.");
-      return;
-    }
-
-    fConfig->sourceSampling = (lower == "midpoint") ? "midpoint" : "uniformAlongStep";
-    G4cout << "[AnalysisMessenger] sourceSampling set to "
-           << fConfig->sourceSampling
-           << G4endl;
-    return;
-  }
-
   if (command == fPlacementFileCmd)
   {
     const std::string requestedPlacement = Trim(newValue);
-    if (!fConfig->opticalSourcePath.empty())
-    {
-      G4double sourceBnWt = 0.0;
-      G4double sourceZnsWt = 0.0;
-      std::string sourcePlacementFile;
-      if (ReadFirstStageCSourceMetadata(fConfig->opticalSourcePath,
-                                        sourceBnWt,
-                                        sourceZnsWt,
-                                        sourcePlacementFile))
-      {
-        RequireMatchingPlacement(requestedPlacement, sourcePlacementFile);
-      }
-    }
-
     fConfig->placementFilePath = requestedPlacement;
     fConfig->useRandomPlacement = false;
 
@@ -700,6 +506,28 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
     return;
   }
 
+  if (command == fPlacementGeometryModeCmd)
+  {
+    const std::string mode = ToLowerCopy(Trim(newValue));
+    if (mode != "pbc_clipped" && mode != "primary_only")
+    {
+      G4Exception("AnalysisMessenger::SetNewValue", "BNZS_CFG_020", FatalException,
+                  "placementGeometryMode must be pbc_clipped or primary_only.");
+      return;
+    }
+    fConfig->placementGeometryMode = mode;
+    G4cout << "[AnalysisMessenger] placementGeometryMode set to " << mode << G4endl;
+    return;
+  }
+
+  if (command == fPeriodicImagesFileCmd)
+  {
+    fConfig->periodicImagesFilePath = Trim(newValue);
+    G4cout << "[AnalysisMessenger] periodicImagesFilePath set to "
+           << fConfig->periodicImagesFilePath << G4endl;
+    return;
+  }
+
   if (command == fAllowThicknessEqualCmd)
   {
     fConfig->allowThicknessEqualLocalPatch =
@@ -707,16 +535,6 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
 
     G4cout << "[AnalysisMessenger] allowThicknessEqualLocalPatch set to "
            << (fConfig->allowThicknessEqualLocalPatch ? "true" : "false")
-           << G4endl;
-    return;
-  }
-  if (command == fWriteStageCPhotonCsvCmd)
-  {
-    fConfig->writeStageCPhotonCsv =
-        fWriteStageCPhotonCsvCmd->GetNewBoolValue(newValue);
-
-    G4cout << "[AnalysisMessenger] writeStageCPhotonCsv set to "
-           << (fConfig->writeStageCPhotonCsv ? "true" : "false")
            << G4endl;
     return;
   }
@@ -736,7 +554,7 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
     {
       G4Exception("AnalysisMessenger::SetNewValue",
                   "BNZS_CFG_009", FatalException,
-                  "Stage D sourceMode must be uniform_ZnS, uniform_all_phase, or from_zns_step_sources.");
+                  "Stage D sourceMode must be uniform_ZnS or uniform_all_phase.");
       return;
     }
     fConfig->stageD_source_mode = normalized;
@@ -752,7 +570,7 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
     {
       G4Exception("AnalysisMessenger::SetNewValue",
                   "BNZS_CFG_010", FatalException,
-                  "Stage D boundaryMode must be escape or same_phase_reentry.");
+                  "Stage D boundaryMode must be periodic_wrap, escape, or same_phase_reentry.");
       return;
     }
     fConfig->stageD_boundary_mode = normalized;
@@ -940,25 +758,6 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
         fStageDMaxPortalFallbackLevelCmd->GetNewIntValue(newValue);
     G4cout << "[AnalysisMessenger] stageD_max_portal_fallback_level set to "
            << fConfig->stageD_max_portal_fallback_level
-           << G4endl;
-    return;
-  }
-  if (command == fOpticalSamplesPerStepCmd)
-  {
-    std::istringstream iss(Trim(newValue));
-    G4int samples = 0;
-
-    if (!(iss >> samples) || samples <= 0)
-    {
-      G4Exception("AnalysisMessenger::SetNewValue",
-                  "BNZS_CFG_006", FatalException,
-                  "Sample photons per step must be a positive integer.");
-      return;
-    }
-
-    fConfig->opticalSamplesPerStep = samples;
-    G4cout << "[AnalysisMessenger] opticalSamplesPerStep set to "
-           << fConfig->opticalSamplesPerStep
            << G4endl;
     return;
   }

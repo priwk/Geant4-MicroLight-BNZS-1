@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument(
         "--ratio-tag",
         required=True,
-        help="Ratio folder under Input/placements, e.g. 1-2 or 2-1.",
+        help="Ratio folder under Input/output_pbc, e.g. 1-2 or 2-1.",
     )
     parser.add_argument(
         "--project-root",
@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument(
         "--placement-dir",
         default=None,
-        help="Placement directory. Defaults to Input/placements/<ratio-tag>.",
+        help="Placement directory. Defaults to Input/output_pbc/<ratio-tag>.",
     )
     parser.add_argument(
         "--placements",
@@ -89,13 +89,13 @@ def parse_args():
     parser.add_argument(
         "--source-mode",
         default="uniform_all_phase",
-        choices=["uniform_ZnS", "uniform_all_phase", "from_zns_step_sources"],
+        choices=["uniform_ZnS", "uniform_all_phase"],
         help="StageD source mode.",
     )
     parser.add_argument(
         "--boundary-mode",
-        default="same_phase_reentry",
-        choices=["escape", "same_phase_reentry"],
+        default="periodic_wrap",
+        choices=["periodic_wrap", "escape", "same_phase_reentry"],
         help="StageD boundary mode.",
     )
     parser.add_argument(
@@ -206,6 +206,15 @@ def normalize_requested_placement(raw: str) -> str:
     return raw if raw.endswith(".csv") else raw + ".csv"
 
 
+def is_main_placement_csv(path: Path) -> bool:
+    name = path.name
+    return (
+        path.suffix.lower() == ".csv"
+        and not name.endswith("_pbc_images.csv")
+        and not name.endswith("_radius_stats.csv")
+    )
+
+
 def placement_display_tag(path: Path, placement_dir: Path) -> str:
     rel = path.resolve().relative_to(placement_dir.resolve())
     suffix = rel.suffix
@@ -217,19 +226,22 @@ def placement_display_tag(path: Path, placement_dir: Path) -> str:
 
 def resolve_placements(placement_dir: Path, requested):
     if not requested:
-        return sorted(placement_dir.rglob("*.csv"))
+        return sorted(
+            path for path in placement_dir.rglob("*.csv")
+            if is_main_placement_csv(path)
+        )
 
     resolved = []
     for item in requested:
         name = normalize_requested_placement(item).replace("\\", "/")
         candidate = placement_dir / name
-        if candidate.is_file():
+        if candidate.is_file() and is_main_placement_csv(candidate):
             resolved.append(candidate)
             continue
 
         matches = sorted(
             path for path in placement_dir.rglob("*.csv")
-            if path.name == Path(name).name
+            if is_main_placement_csv(path) and path.name == Path(name).name
         )
         if not matches:
             raise SystemExit(f"Placement not found under {placement_dir}: {item}")
@@ -324,7 +336,7 @@ def main():
     placement_dir = (
         Path(args.placement_dir).resolve()
         if args.placement_dir
-        else project_root / "Input" / "placements" / args.ratio_tag
+        else project_root / "Input" / "output_pbc" / args.ratio_tag
     )
     macro_dir = (
         Path(args.macro_dir).resolve()

@@ -211,79 +211,6 @@ namespace
     return WeightPartToTagString(bnWt) + "-" + WeightPartToTagString(znsWt);
   }
 
-  const G4double kXYMargin = 7.0 * um;
-  const G4double kZBulkMargin = 7.45 * um;
-
-  G4bool IsInsideSafeXY(const G4ThreeVector &p, const DetectorConstruction *det)
-  {
-    const G4double halfXY = 0.5 * det->GetPatchXYUm() * um;
-    return (std::abs(p.x()) <= halfXY - kXYMargin &&
-            std::abs(p.y()) <= halfXY - kXYMargin);
-  }
-
-  G4bool IsInsideBulkZWindow(const G4ThreeVector &p, const DetectorConstruction *det)
-  {
-    const G4double localT = det->GetEffectiveLocalThickness();
-    return (p.z() >= -0.5 * localT + kZBulkMargin &&
-            p.z() <= +0.5 * localT - kZBulkMargin);
-  }
-
-  G4bool IsBulkSphereFullyInSafeWindow(const G4ThreeVector &center,
-                                       G4double radius,
-                                       const DetectorConstruction *det)
-  {
-    const G4double halfXY = 0.5 * det->GetPatchXYUm() * um;
-    const G4double localT = det->GetEffectiveLocalThickness();
-
-    return (std::abs(center.x()) + radius <= halfXY - kXYMargin &&
-            std::abs(center.y()) + radius <= halfXY - kXYMargin &&
-            center.z() - radius >= -0.5 * localT + kZBulkMargin &&
-            center.z() + radius <= +0.5 * localT - kZBulkMargin);
-  }
-
-  G4bool IsBulkPointSafe(const G4ThreeVector &p, const DetectorConstruction *det)
-  {
-    return IsInsideSafeXY(p, det) && IsInsideBulkZWindow(p, det);
-  }
-
-  G4bool DoesSphereIntersectBulkSafeWindow(const G4ThreeVector &center,
-                                           G4double radius,
-                                           const DetectorConstruction *det)
-  {
-    const G4double safeHalfXY = 0.5 * det->GetPatchXYUm() * um - kXYMargin;
-    const G4double localT = det->GetEffectiveLocalThickness();
-    const G4double zMin = -0.5 * localT + kZBulkMargin;
-    const G4double zMax = +0.5 * localT - kZBulkMargin;
-
-    const G4double closestX = std::min(std::max(center.x(), -safeHalfXY), safeHalfXY);
-    const G4double closestY = std::min(std::max(center.y(), -safeHalfXY), safeHalfXY);
-    const G4double closestZ = std::min(std::max(center.z(), zMin), zMax);
-
-    const G4double dx = center.x() - closestX;
-    const G4double dy = center.y() - closestY;
-    const G4double dz = center.z() - closestZ;
-
-    return (dx * dx + dy * dy + dz * dz <= radius * radius);
-  }
-
-  G4bool IsSurfaceSliceSafelyInsideXY(const G4ThreeVector &center,
-                                      G4double diskRadius,
-                                      const DetectorConstruction *det)
-  {
-    const G4double halfXY = 0.5 * det->GetPatchXYUm() * um;
-    return (std::abs(center.x()) + diskRadius <= halfXY - kXYMargin &&
-            std::abs(center.y()) + diskRadius <= halfXY - kXYMargin);
-  }
-
-  G4bool DoesSurfaceSliceIntersectSafeXY(const G4ThreeVector &center,
-                                         G4double diskRadius,
-                                         const DetectorConstruction *det)
-  {
-    const G4double safeHalfXY = 0.5 * det->GetPatchXYUm() * um - kXYMargin;
-    const G4double dx = std::max(0.0, std::abs(center.x()) - safeHalfXY);
-    const G4double dy = std::max(0.0, std::abs(center.y()) - safeHalfXY);
-    return (dx * dx + dy * dy <= diskRadius * diskRadius);
-  }
 }
 
 // --------------------------------------------------------------------
@@ -306,6 +233,8 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
       fAlphaLiReplayPerCapture(ReadAlphaLiReplayPerCapture()),
       fCurrentAlphaLiReplayIndex(0),
       fRemainingReplaysForCurrentCapture(0),
+      fInitializedCaptureCsvPath(""),
+      fInitializedCaptureInputDir(""),
       fCurrentRecord(),
       fCurrentLocalCapturePosition(),
       fCurrentSelectedBNCenter(),
@@ -316,6 +245,11 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
   fParticleGun = new G4ParticleGun(1);
 
   InitializeInputStreaming();
+  if (fConfig != nullptr)
+  {
+    fInitializedCaptureCsvPath = fConfig->captureCsvPath;
+    fInitializedCaptureInputDir = fConfig->captureInputDir;
+  }
   ConfigureDetectorFromInput();
 
   // temporary default, will be overwritten event-by-event
@@ -332,6 +266,37 @@ PrimaryGeneratorAction::PrimaryGeneratorAction(AnalysisConfig *config)
 PrimaryGeneratorAction::~PrimaryGeneratorAction()
 {
   delete fParticleGun;
+}
+
+void PrimaryGeneratorAction::RefreshInputSelectionFromConfig()
+{
+  if (fConfig == nullptr ||
+      (fConfig->captureCsvPath == fInitializedCaptureCsvPath &&
+       fConfig->captureInputDir == fInitializedCaptureInputDir))
+  {
+    return;
+  }
+
+  if (fCurrentInputStream.is_open())
+    fCurrentInputStream.close();
+
+  InitializeInputStreaming();
+  const auto *det = dynamic_cast<const DetectorConstruction *>(
+      G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+  if (det != nullptr && fHasFirstRecordForGeometry &&
+      (std::abs(det->GetBnWt() - fFirstRecordForGeometry.bn_wt) > 1.0e-12 ||
+       std::abs(det->GetZnsWt() - fFirstRecordForGeometry.zns_wt) > 1.0e-12))
+  {
+    G4Exception("PrimaryGeneratorAction::RefreshInputSelectionFromConfig",
+                "BNZS011", FatalException,
+                "Refreshed Stage B input ratio does not match the initialized geometry. Set the weight ratio before /run/initialize.");
+    return;
+  }
+  fInitializedCaptureCsvPath = fConfig->captureCsvPath;
+  fInitializedCaptureInputDir = fConfig->captureInputDir;
+
+  G4cout << "[PrimaryGeneratorAction] Refreshed Stage B input selection before run."
+         << G4endl;
 }
 
 // --------------------------------------------------------------------
@@ -842,6 +807,7 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
   G4ThreeVector chosenCenter;
+  G4double chosenRadius = 0.0;
   G4double usedZ = 0.0;
   G4bool usedFallback = false;
 
@@ -863,6 +829,7 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
     if (!SelectBNSphereForTargetZ(
             fCurrentTargetLocalZ,
             chosenCenter,
+            chosenRadius,
             usedZ,
             usedFallback))
     {
@@ -875,7 +842,7 @@ G4bool PrimaryGeneratorAction::PrepareCurrentCaptureReplayState()
     if (!SampleSafePointInSphereSlice(
             chosenCenter,
             usedZ,
-            det->GetBNRadius(),
+            chosenRadius,
             fCurrentLocalCapturePosition))
     {
       G4Exception("PrimaryGeneratorAction::PrepareCurrentCaptureReplayState",
@@ -993,92 +960,54 @@ G4double PrimaryGeneratorAction::DetermineTargetLocalZ(
 G4bool PrimaryGeneratorAction::SelectBNSphereForTargetZ(
     G4double targetZ,
     G4ThreeVector &chosenCenter,
+    G4double &chosenRadius,
     G4double &usedZ,
     G4bool &usedFallback) const
 {
   const auto *det = dynamic_cast<const DetectorConstruction *>(
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
-  const G4double R = det->GetBNRadius();
-
-  auto trySelect = [&](const std::vector<G4ThreeVector> &centers,
-                       G4bool requireSafeXY,
-                       G4ThreeVector &centerOut,
-                       G4double &zOut,
-                       G4bool &fallbackOut) -> G4bool
+  const auto &spheres = det->GetBNSpheres();
+  const G4double boxZ = det->GetBoxZUm() * um;
+  std::vector<G4int> candidateIdx;
+  std::vector<G4double> weights;
+  for (G4int i = 0; i < static_cast<G4int>(spheres.size()); ++i)
   {
-    std::vector<G4int> candidateIdx;
-    std::vector<G4double> weights;
-
-    for (G4int i = 0; i < static_cast<G4int>(centers.size()); ++i)
+    const auto &sphere = spheres[static_cast<std::size_t>(i)];
+    G4double dz = targetZ - sphere.center.z();
+    dz -= boxZ * std::nearbyint(dz / boxZ);
+    if (std::abs(dz) < sphere.radius)
     {
-      const G4double dz = targetZ - centers[i].z();
-      if (std::abs(dz) < R)
+      const G4double area = pi * (sphere.radius * sphere.radius - dz * dz);
+      if (area > 0.0)
       {
-        const G4double baseW = pi * (R * R - dz * dz);
-        if (baseW > 0.0)
-        {
-          const G4double diskR = std::sqrt(std::max(0.0, R * R - dz * dz));
-          if (requireSafeXY && !IsSurfaceSliceSafelyInsideXY(centers[i], diskR, det))
-          {
-            continue;
-          }
-
-          if (!requireSafeXY && !DoesSurfaceSliceIntersectSafeXY(centers[i], diskR, det))
-          {
-            continue;
-          }
-
-          candidateIdx.push_back(i);
-          weights.push_back(baseW);
-        }
+        candidateIdx.push_back(i);
+        weights.push_back(area);
       }
     }
+  }
 
-    if (!candidateIdx.empty())
+  if (!candidateIdx.empty())
+  {
+    const G4double sumW = std::accumulate(weights.begin(), weights.end(), 0.0);
+    G4double pick = G4UniformRand() * sumW;
+    for (G4int k = 0; k < static_cast<G4int>(candidateIdx.size()); ++k)
     {
-      const G4double sumW = std::accumulate(weights.begin(), weights.end(), 0.0);
-      G4double pick = G4UniformRand() * sumW;
-
-      for (G4int k = 0; k < static_cast<G4int>(candidateIdx.size()); ++k)
+      pick -= weights[static_cast<std::size_t>(k)];
+      if (pick <= 0.0 || k == static_cast<G4int>(candidateIdx.size()) - 1)
       {
-        pick -= weights[k];
-        if (pick <= 0.0 || k == static_cast<G4int>(candidateIdx.size()) - 1)
-        {
-          centerOut = centers[candidateIdx[k]];
-          zOut = targetZ;
-          fallbackOut = !requireSafeXY;
-          return true;
-        }
+        const auto &sphere = spheres[static_cast<std::size_t>(candidateIdx[static_cast<std::size_t>(k)])];
+        chosenCenter = sphere.center;
+        chosenCenter.setZ(targetZ -
+                          (targetZ - sphere.center.z() -
+                           boxZ * std::nearbyint((targetZ - sphere.center.z()) / boxZ)));
+        chosenRadius = sphere.radius;
+        usedZ = targetZ;
+        usedFallback = false;
+        return true;
       }
     }
-
-    return false;
-  };
-
-  // Prefer cross-section disks that remain well inside the RVE XY boundary.
-  if (trySelect(det->GetSafeBNCenters(), true, chosenCenter, usedZ, usedFallback))
-  {
-    return true;
   }
-
-  if (trySelect(det->GetPlacedBNCenters(), true, chosenCenter, usedZ, usedFallback))
-  {
-    return true;
-  }
-
-  // Last resort: preserve the surface-depth mapping, but only if the slice
-  // intersects the XY safety window and a safe point can be rejection-sampled.
-  if (trySelect(det->GetSafeBNCenters(), false, chosenCenter, usedZ, usedFallback))
-  {
-    return true;
-  }
-
-  if (trySelect(det->GetPlacedBNCenters(), false, chosenCenter, usedZ, usedFallback))
-  {
-    return true;
-  }
-
   return false;
 }
 
@@ -1114,8 +1043,9 @@ G4bool PrimaryGeneratorAction::SampleSafePointInSphereSlice(
 
   for (G4int trial = 0; trial < 4096; ++trial)
   {
-    const G4ThreeVector p = SamplePointInSphereSlice(center, zSlice, sphereRadius);
-    if (IsInsideSafeXY(p, det))
+    G4ThreeVector p = SamplePointInSphereSlice(center, zSlice, sphereRadius);
+    p = det->WrapToPrimaryCell(p);
+    if (det->FindPhaseAtPoint(p) == DetectorConstruction::Phase::BN)
     {
       point = p;
       return true;
@@ -1152,78 +1082,32 @@ G4bool PrimaryGeneratorAction::SampleBulkCapturePoint(
   const auto *det = dynamic_cast<const DetectorConstruction *>(
       G4RunManager::GetRunManager()->GetUserDetectorConstruction());
 
-  const G4double R = det->GetBNRadius();
-
-  auto collectFullySafeCenters = [&](const std::vector<G4ThreeVector> &centers)
-  {
-    std::vector<G4ThreeVector> out;
-    for (const auto &c : centers)
-    {
-      if (IsBulkSphereFullyInSafeWindow(c, R, det))
-      {
-        out.push_back(c);
-      }
-    }
-    return out;
-  };
-
-  auto chooseCenterUniformly = [](const std::vector<G4ThreeVector> &centers)
-  {
-    const G4int idx = std::min(
-        static_cast<G4int>(centers.size()) - 1,
-        static_cast<G4int>(G4UniformRand() * centers.size()));
-    return centers[idx];
-  };
-
-  auto safeCenters = collectFullySafeCenters(det->GetSafeBNCenters());
-  if (safeCenters.empty())
-  {
-    safeCenters = collectFullySafeCenters(det->GetPlacedBNCenters());
-  }
-
-  if (!safeCenters.empty())
-  {
-    chosenCenter = chooseCenterUniformly(safeCenters);
-    capturePoint = SamplePointInSphereVolume(chosenCenter, R);
-    usedFallback = false;
-    return true;
-  }
-
-  // Fallback for sparse/pathological placements: find a BN sphere that still
-  // contains at least one point in the safe bulk window, then rejection-sample.
-  std::vector<G4ThreeVector> candidateCenters;
-  for (const auto &c : det->GetSafeBNCenters())
-  {
-    if (DoesSphereIntersectBulkSafeWindow(c, R, det))
-    {
-      candidateCenters.push_back(c);
-    }
-  }
-
-  if (candidateCenters.empty())
-  {
-    for (const auto &c : det->GetPlacedBNCenters())
-    {
-      if (DoesSphereIntersectBulkSafeWindow(c, R, det))
-      {
-        candidateCenters.push_back(c);
-      }
-    }
-  }
-
-  if (candidateCenters.empty())
-  {
+  const auto &spheres = det->GetBNSpheres();
+  if (spheres.empty())
     return false;
-  }
-
-  chosenCenter = chooseCenterUniformly(candidateCenters);
-  for (G4int trial = 0; trial < 4096; ++trial)
+  G4double totalWeight = 0.0;
+  for (const auto &sphere : spheres)
+    totalWeight += sphere.radius * sphere.radius * sphere.radius;
+  G4double pick = G4UniformRand() * totalWeight;
+  const DetectorConstruction::SphereInfo *chosenSphere = &spheres.back();
+  for (const auto &sphere : spheres)
   {
-    const G4ThreeVector p = SamplePointInSphereVolume(chosenCenter, R);
-    if (IsBulkPointSafe(p, det))
+    pick -= sphere.radius * sphere.radius * sphere.radius;
+    if (pick <= 0.0)
+    {
+      chosenSphere = &sphere;
+      break;
+    }
+  }
+  chosenCenter = chosenSphere->center;
+  for (G4int trial = 0; trial < 64; ++trial)
+  {
+    G4ThreeVector p = SamplePointInSphereVolume(chosenCenter, chosenSphere->radius);
+    p = det->WrapToPrimaryCell(p);
+    if (det->FindPhaseAtPoint(p) == DetectorConstruction::Phase::BN)
     {
       capturePoint = p;
-      usedFallback = true;
+      usedFallback = false;
       return true;
     }
   }

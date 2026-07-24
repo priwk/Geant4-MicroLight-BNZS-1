@@ -3,8 +3,8 @@
 #include "AnalysisConfig.hh"
 #include "RunAction.hh"
 #include "StageARunAction.hh"
-#include "StageCOpticalRunAction.hh"
 #include "StageDOpticalRunAction.hh"
+#include "PrimaryGeneratorAction.hh"
 
 #include "G4Run.hh"
 #include "G4Exception.hh"
@@ -15,8 +15,8 @@ ModeRunAction::ModeRunAction(AnalysisConfig *config)
       fConfig(config),
       fStageBRunAction(nullptr),
       fStageARunAction(nullptr),
-      fStageCRunAction(nullptr),
-      fStageDRunAction(nullptr)
+      fStageDRunAction(nullptr),
+      fStageBPrimaryAction(nullptr)
 {
     if (fConfig == nullptr)
     {
@@ -30,7 +30,6 @@ ModeRunAction::ModeRunAction(AnalysisConfig *config)
     // 再做一个很小的联动，把Stage B primary指针传进来。
     fStageBRunAction = new RunAction(nullptr, fConfig);
     fStageARunAction = new StageARunAction(fConfig);
-    fStageCRunAction = new StageCOpticalRunAction(fConfig);
     fStageDRunAction = new StageDOpticalRunAction(fConfig);
 
     G4cout << "[ModeRunAction] Dispatcher initialized."
@@ -43,7 +42,6 @@ ModeRunAction::~ModeRunAction()
 {
     delete fStageARunAction;
     delete fStageBRunAction;
-    delete fStageCRunAction;
     delete fStageDRunAction;
 }
 
@@ -78,24 +76,11 @@ void ModeRunAction::BeginOfRunAction(const G4Run *run)
                         "Stage B run action is null.");
             return;
         }
-        fStageBRunAction->BeginOfRunAction(run);
-        return;
-
-    case RunMode::StageC_OpticalStub:
-        G4Exception("ModeRunAction::BeginOfRunAction",
-                    "BNZS_MODE_RUN_005", FatalException,
-                    "RunMode StageC_OpticalStub is selected, but Stage C run action is not implemented yet.");
-        return;
-
-    case RunMode::StageC_OpticalRVE:
-        if (fStageCRunAction == nullptr)
+        if (fStageBPrimaryAction != nullptr)
         {
-            G4Exception("ModeRunAction::BeginOfRunAction",
-                        "BNZS_MODE_RUN_012", FatalException,
-                        "Stage C optical run action is null.");
-            return;
+            fStageBPrimaryAction->RefreshInputSelectionFromConfig();
         }
-        fStageCRunAction->BeginOfRunAction(run);
+        fStageBRunAction->BeginOfRunAction(run);
         return;
 
     case RunMode::StageD_OpticalHomogenization:
@@ -151,23 +136,6 @@ void ModeRunAction::EndOfRunAction(const G4Run *run)
         fStageBRunAction->EndOfRunAction(run);
         return;
 
-    case RunMode::StageC_OpticalStub:
-        G4Exception("ModeRunAction::EndOfRunAction",
-                    "BNZS_MODE_RUN_010", FatalException,
-                    "RunMode StageC_OpticalStub is selected, but Stage C run action is not implemented yet.");
-        return;
-
-    case RunMode::StageC_OpticalRVE:
-        if (fStageCRunAction == nullptr)
-        {
-            G4Exception("ModeRunAction::EndOfRunAction",
-                        "BNZS_MODE_RUN_013", FatalException,
-                        "Stage C optical run action is null.");
-            return;
-        }
-        fStageCRunAction->EndOfRunAction(run);
-        return;
-
     case RunMode::StageD_OpticalHomogenization:
         if (fStageDRunAction == nullptr)
         {
@@ -197,29 +165,16 @@ StageARunAction *ModeRunAction::GetStageARunAction() const
     return fStageARunAction;
 }
 
-StageCOpticalRunAction *ModeRunAction::GetStageCRunAction() const
-{
-    return fStageCRunAction;
-}
-
 StageDOpticalRunAction *ModeRunAction::GetStageDRunAction() const
 {
     return fStageDRunAction;
 }
 
-void ModeRunAction::SetStageBPrimaryAction(const PrimaryGeneratorAction *primaryAction)
+void ModeRunAction::SetStageBPrimaryAction(PrimaryGeneratorAction *primaryAction)
 {
+    fStageBPrimaryAction = primaryAction;
     if (fStageBRunAction != nullptr)
     {
         fStageBRunAction->SetPrimaryAction(primaryAction);
-    }
-}
-
-void ModeRunAction::SetStageCPrimaryAction(
-    const StageCOpticalPrimaryGeneratorAction *primaryAction)
-{
-    if (fStageCRunAction != nullptr)
-    {
-        fStageCRunAction->SetPrimaryAction(primaryAction);
     }
 }

@@ -67,12 +67,12 @@ def parse_args():
     stage_d.add_argument(
         "--source-mode",
         default="uniform_all_phase",
-        choices=["uniform_ZnS", "uniform_all_phase", "from_zns_step_sources"],
+        choices=["uniform_ZnS", "uniform_all_phase"],
     )
     stage_d.add_argument(
         "--boundary-mode",
-        default="same_phase_reentry",
-        choices=["escape", "same_phase_reentry"],
+        default="periodic_wrap",
+        choices=["periodic_wrap", "escape", "same_phase_reentry"],
     )
     stage_d.add_argument(
         "--reentry-mode",
@@ -225,7 +225,7 @@ def resolve_stage_d_paths(args):
     placement_dir = (
         Path(args.placement_dir).resolve()
         if args.placement_dir
-        else project_root / "Input" / "placements" / args.ratio_tag
+        else project_root / "Input" / "output_pbc" / args.ratio_tag
     )
     wavelength_tag = (
         f"lambda_{int(round(args.wavelength_nm))}nm"
@@ -405,7 +405,7 @@ def resolve_stage_b_paths(args):
     )
     macro = Path(args.macro).resolve() if args.macro else project_root / "run.mac"
     input_root, stagea_layout = stageb.resolve_capture_input_root(project_root)
-    placement_root = project_root / "Input" / "placements"
+    placement_root = stageb.resolve_placement_root(project_root)
     chunk_root = build_dir / "stageB_balanced_chunks_parallel"
     log_root = project_root / "logs" / "stageB" / "balanced_parallel"
     return project_root, build_dir, executable, macro, input_root, stagea_layout, placement_root, chunk_root, log_root
@@ -438,7 +438,7 @@ def prepare_stage_b_tasks_for_ratio(
     base_env,
 ):
     tasks = []
-    ratio_placement_dir = project_root / "Input" / "placements" / ratio
+    ratio_placement_dir = stageb.resolve_placement_root(project_root) / ratio
     placement_index_lookup = {path.resolve(): idx for idx, path in enumerate(placement_files)}
 
     for placement_file in placement_files:
@@ -581,7 +581,7 @@ def run_stage_b(args):
             ),
             key=lambda p: (stageb.natural_float_tag(p), p.name),
         )
-        placement_files = sorted(ratio_placement_dir.rglob("*.csv"))
+        placement_files = stageb.discover_placements(ratio_placement_dir)
 
         if not capture_files:
             print(f">>> Skip {ratio}: no capture CSV files in {ratio_input_dir}")

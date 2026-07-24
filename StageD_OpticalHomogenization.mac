@@ -7,7 +7,7 @@
 /cfg/setRunMode StageD_OpticalHomogenization
 /cfg/stageD/setWavelengthNm 450
 /cfg/stageD/setSourceMode uniform_all_phase
-/cfg/stageD/setBoundaryMode same_phase_reentry
+/cfg/stageD/setBoundaryMode periodic_wrap
 /cfg/stageD/setReentryMode state_matched
 /cfg/stageD/setParticleReentryMode sphere_q_mu
 /cfg/stageD/setMatrixReentryMode clearance_binned_portal

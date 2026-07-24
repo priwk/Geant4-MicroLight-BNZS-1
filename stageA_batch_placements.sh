@@ -3,7 +3,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
-PLACEMENT_ROOT="$PROJECT_ROOT/Input/placements"
+PLACEMENT_ROOT="$PROJECT_ROOT/Input/output_pbc"
+if [ ! -d "$PLACEMENT_ROOT" ]; then
+  PLACEMENT_ROOT="$PROJECT_ROOT/Input/placements"
+fi
 OUTPUT_ROOT="$PROJECT_ROOT/Output/stageA"
 LOG_DIR="$PROJECT_ROOT/logs/stageA"
 EVENTS="${STAGEA_EVENTS:-100000}"
@@ -63,7 +66,10 @@ for ratio in "${ratios[@]}"; do
   bn_wt="${ratio%%-*}"
   zns_wt="${ratio#*-}"
 
-  mapfile -t placements < <(find "$ratio_dir" -type f \( -name '*.csv' -o -name '*.txt' \) | sort)
+  mapfile -t placements < <(
+    find "$ratio_dir" -type f \( -name '*.csv' -o -name '*.txt' \) \
+      ! -name '*_pbc_images.csv' ! -name '*_radius_stats.csv' | sort
+  )
   if [ "${#placements[@]}" -eq 0 ]; then
     echo "No placement files found in: $ratio_dir"
     continue

@@ -167,6 +167,8 @@ private:
                      G4int &iz) const;
   void CollectCandidateSphereIds(const G4ThreeVector &point,
                                  std::vector<G4int> &candidateIds) const;
+  G4ThreeVector MinimumImageDelta(const G4ThreeVector &point,
+                                  const G4ThreeVector &center) const;
 
   G4double HalfExtentX() const;
   G4double HalfExtentY() const;

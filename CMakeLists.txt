@@ -28,7 +28,6 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/include/modes
   ${PROJECT_SOURCE_DIR}/include/stageA
   ${PROJECT_SOURCE_DIR}/include/stageB
-  ${PROJECT_SOURCE_DIR}/include/stageC
   ${PROJECT_SOURCE_DIR}/include/stageD
   )
 
@@ -39,6 +38,13 @@ include_directories(
 #
 file(GLOB_RECURSE sources ${PROJECT_SOURCE_DIR}/src/*.cc)
 file(GLOB_RECURSE headers ${PROJECT_SOURCE_DIR}/include/*.hh)
+
+# Keep the v3 RVE reader explicit: it is a required geometry component rather
+# than an optional source discovered only through the recursive glob.
+list(APPEND sources ${PROJECT_SOURCE_DIR}/src/core/RvePlacementReader.cc)
+list(APPEND headers ${PROJECT_SOURCE_DIR}/include/core/RvePlacementReader.hh)
+list(REMOVE_DUPLICATES sources)
+list(REMOVE_DUPLICATES headers)
 
 #----------------------------------------------------------------------------
 # Add the executable, and link it to the Geant4 libraries
@@ -56,8 +62,6 @@ set(BNZS_SCRIPTS
   init_vis.mac
   vis.mac
   StageA.mac
-  StageC_test.mac
-  StageC_OpticalRVE.mac
   StageD_OpticalHomogenization.mac
   )
 

@@ -1,6 +1,7 @@
 #include "StageAPrimaryGeneratorAction.hh"
 
 #include "AnalysisConfig.hh"
+#include "DetectorConstruction.hh"
 
 #include "G4ParticleGun.hh"
 #include "G4ParticleTable.hh"
@@ -11,6 +12,7 @@
 #include "Randomize.hh"
 #include "G4Exception.hh"
 #include "G4ios.hh"
+#include "G4RunManager.hh"
 
 StageAPrimaryGeneratorAction::StageAPrimaryGeneratorAction(AnalysisConfig *config)
     : G4VUserPrimaryGeneratorAction(),
@@ -63,20 +65,23 @@ void StageAPrimaryGeneratorAction::GeneratePrimaries(G4Event *event)
         return;
     }
 
-    const G4double patchXY = fConfig->patchXY_um * um;
-    const G4double microThickness = fConfig->microThickness_um * um;
+    const auto *detector = dynamic_cast<const DetectorConstruction *>(
+        G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+    if (detector == nullptr)
+        return;
 
     // 在 patch 前表面上方 1 um 处，从上往下入射
-    const G4double sourceZ = 0.5 * microThickness + 1.0 * um;
+    const G4double sourceZ = detector->GetBoxHalfZ() + 1.0 * um;
 
     // --- 修改这里 ---
     // 假设你想把边长缩小为原来的 90%（即面积缩小到 81%）
     const G4double scaleFactor = 0.92;
-    const G4double halfXY = 0.5 * patchXY * scaleFactor;
+    const G4double halfX = detector->GetBoxHalfX() * scaleFactor;
+    const G4double halfY = detector->GetBoxHalfY() * scaleFactor;
     // ---------------
 
-    const G4double x = (2.0 * G4UniformRand() - 1.0) * halfXY;
-    const G4double y = (2.0 * G4UniformRand() - 1.0) * halfXY;
+    const G4double x = (2.0 * G4UniformRand() - 1.0) * halfX;
+    const G4double y = (2.0 * G4UniformRand() - 1.0) * halfY;
 
     fParticleGun->SetParticlePosition(G4ThreeVector(x, y, sourceZ));
 

@@ -109,7 +109,7 @@ G4bool StageDReentrySampler::SampleReentry(const ReentryContext &ctx,
       if (oldSphere == nullptr || oldSphere->radius <= 0.0)
         return false;
 
-      const G4double rho = (oldPosition - oldSphere->center).mag();
+      const G4double rho = MinimumImageDelta(oldPosition, oldSphere->center).mag();
       const G4double qUpper =
           std::max(0.0, 1.0 - (kBoundaryEpsilon / std::max(oldSphere->radius, kBoundaryEpsilon)));
       const G4double q =
@@ -189,29 +189,8 @@ DetectorConstruction::Phase StageDReentrySampler::FastPhaseAtPointForReentry(
 {
   if (!InsideRveBox(point))
     return DetectorConstruction::Phase::World;
-
-  std::vector<G4int> candidateIds;
-  CollectCandidateSphereIds(point, candidateIds);
-
-  for (G4int sphereId : candidateIds)
-  {
-    const MicroSphere &sphere = fSpheres[static_cast<std::size_t>(sphereId)];
-    if (sphere.phase != DetectorConstruction::Phase::BN)
-      continue;
-    if ((point - sphere.center).mag2() <= sphere.radius2)
-      return DetectorConstruction::Phase::BN;
-  }
-
-  for (G4int sphereId : candidateIds)
-  {
-    const MicroSphere &sphere = fSpheres[static_cast<std::size_t>(sphereId)];
-    if (sphere.phase != DetectorConstruction::Phase::ZnS)
-      continue;
-    if ((point - sphere.center).mag2() <= sphere.radius2)
-      return DetectorConstruction::Phase::ZnS;
-  }
-
-  return DetectorConstruction::Phase::Matrix;
+  return fDetector != nullptr ? fDetector->FindPhaseAtPoint(point)
+                              : DetectorConstruction::Phase::Unknown;
 }
 
 void StageDReentrySampler::BuildSphereCache()
@@ -271,7 +250,7 @@ void StageDReentrySampler::BuildSpatialGrid()
 
   const auto computeDim = [&](G4double halfExtent)
   {
-    return std::max(1, static_cast<G4int>(std::ceil((2.0 * halfExtent) / fGridCellSize)));
+    return std::max(1, static_cast<G4int>(std::floor((2.0 * halfExtent) / fGridCellSize)));
   };
 
   fGridNx = computeDim(fHalfX);
@@ -286,36 +265,15 @@ void StageDReentrySampler::BuildSpatialGrid()
   for (std::size_t sphereId = 0; sphereId < fSpheres.size(); ++sphereId)
   {
     const MicroSphere &sphere = fSpheres[sphereId];
-    const G4double xmin = std::max(-fHalfX, sphere.center.x() - sphere.radius);
-    const G4double xmax = std::min(+fHalfX, sphere.center.x() + sphere.radius);
-    const G4double ymin = std::max(-fHalfY, sphere.center.y() - sphere.radius);
-    const G4double ymax = std::min(+fHalfY, sphere.center.y() + sphere.radius);
-    const G4double zmin = std::max(-fHalfZ, sphere.center.z() - sphere.radius);
-    const G4double zmax = std::min(+fHalfZ, sphere.center.z() + sphere.radius);
-
     auto coordToCell = [&](G4double coord, G4double halfExtent, G4int dim)
     {
-      const G4double shifted = (coord + halfExtent) / fGridCellSize;
-      return std::clamp(static_cast<G4int>(std::floor(shifted)), 0, dim - 1);
+      const G4double normalized = (coord + halfExtent) / (2.0 * halfExtent);
+      return std::clamp(static_cast<G4int>(std::floor(normalized * dim)), 0, dim - 1);
     };
-
-    const G4int ix0 = coordToCell(xmin, fHalfX, fGridNx);
-    const G4int ix1 = coordToCell(xmax, fHalfX, fGridNx);
-    const G4int iy0 = coordToCell(ymin, fHalfY, fGridNy);
-    const G4int iy1 = coordToCell(ymax, fHalfY, fGridNy);
-    const G4int iz0 = coordToCell(zmin, fHalfZ, fGridNz);
-    const G4int iz1 = coordToCell(zmax, fHalfZ, fGridNz);
-
-    for (G4int ix = ix0; ix <= ix1; ++ix)
-    {
-      for (G4int iy = iy0; iy <= iy1; ++iy)
-      {
-        for (G4int iz = iz0; iz <= iz1; ++iz)
-        {
-          fGridCells[FlatCellIndex(ix, iy, iz)].push_back(static_cast<G4int>(sphereId));
-        }
-      }
-    }
+    const G4int ix = coordToCell(sphere.center.x(), fHalfX, fGridNx);
+    const G4int iy = coordToCell(sphere.center.y(), fHalfY, fGridNy);
+    const G4int iz = coordToCell(sphere.center.z(), fHalfZ, fGridNz);
+    fGridCells[FlatCellIndex(ix, iy, iz)].push_back(static_cast<G4int>(sphereId));
   }
 }
 
@@ -401,7 +359,8 @@ G4bool StageDReentrySampler::SampleParticleSphereQMuReentry(
   if (oldSphere == nullptr || oldSphere->radius <= 0.0)
     return false;
 
-  const G4double rho = (oldPosition - oldSphere->center).mag();
+  const G4ThreeVector oldOffset = MinimumImageDelta(oldPosition, oldSphere->center);
+  const G4double rho = oldOffset.mag();
   const G4double qUpper = std::max(0.0, 1.0 - (kBoundaryEpsilon / std::max(oldSphere->radius, kBoundaryEpsilon)));
   const G4double q = std::clamp(rho / std::max(oldSphere->radius, kBoundaryEpsilon), 0.0, qUpper);
 
@@ -409,7 +368,7 @@ G4bool StageDReentrySampler::SampleParticleSphereQMuReentry(
   G4double mu = 0.0;
   if (rho > kNearZero)
   {
-    const G4ThreeVector nOld = (oldPosition - oldSphere->center) / rho;
+    const G4ThreeVector nOld = oldOffset / rho;
     mu = std::clamp(oldDir.dot(nOld), -1.0, 1.0);
   }
 
@@ -430,13 +389,12 @@ G4bool StageDReentrySampler::SampleParticleSphereQMuReentry(
 
     if (!ClampInsideSameSphereRoundoffOnly(candidate, newSphere))
       continue;
+    const G4double rhoEntry = (candidate - newSphere.center).mag();
+    candidate = fDetector->WrapToPrimaryCell(candidate);
     if (!ValidatePhase(candidate, ctx.phase))
       continue;
 
-    const G4double rhoEntry = (candidate - newSphere.center).mag();
     G4ThreeVector nEntry = nNew;
-    if (rhoEntry > kNearZero)
-      nEntry = (candidate - newSphere.center) / rhoEntry;
 
     newPosition = candidate;
     diag.entryPoint = candidate;
@@ -472,12 +430,13 @@ G4bool StageDReentrySampler::SampleParticleSphereQOnlyReentry(
 
     if (!ClampInsideSameSphereRoundoffOnly(candidate, newSphere))
       continue;
+    const G4double rhoEntry = (candidate - newSphere.center).mag();
+    const G4ThreeVector radial = (rhoEntry > kNearZero)
+                                     ? ((candidate - newSphere.center) / rhoEntry)
+                                     : nNew;
+    candidate = fDetector->WrapToPrimaryCell(candidate);
     if (!ValidatePhase(candidate, ctx.phase))
       continue;
-
-    const G4double rhoEntry = (candidate - newSphere.center).mag();
-    const G4ThreeVector radial =
-        (rhoEntry > kNearZero) ? ((candidate - newSphere.center) / rhoEntry) : nNew;
 
     newPosition = candidate;
     diag.strategy = "particle_sphere_q_only";
@@ -746,7 +705,7 @@ const StageDReentrySampler::MicroSphere *StageDReentrySampler::FindContainingSph
     const MicroSphere &sphere = fSpheres[static_cast<std::size_t>(sphereId)];
     if (sphere.phase != phase)
       continue;
-    if ((position - sphere.center).mag2() <= sphere.radius2)
+    if (MinimumImageDelta(position, sphere.center).mag2() <= sphere.radius2)
       return &sphere;
   }
 
@@ -782,19 +741,20 @@ StageDReentrySampler::NearestSurface StageDReentrySampler::FindNearestParticleSu
 
   for (G4int layer = 0; layer <= maxLayer; ++layer)
   {
-    const G4int ix0 = std::max(0, ix - layer);
-    const G4int ix1 = std::min(fGridNx - 1, ix + layer);
-    const G4int iy0 = std::max(0, iy - layer);
-    const G4int iy1 = std::min(fGridNy - 1, iy + layer);
-    const G4int iz0 = std::max(0, iz - layer);
-    const G4int iz1 = std::min(fGridNz - 1, iz + layer);
-
-    for (G4int cx = ix0; cx <= ix1; ++cx)
+    const auto modulo = [](G4int value, G4int count)
     {
-      for (G4int cy = iy0; cy <= iy1; ++cy)
+      const G4int result = value % count;
+      return result < 0 ? result + count : result;
+    };
+    for (G4int dx = -layer; dx <= layer; ++dx)
+    {
+      const G4int cx = modulo(ix + dx, fGridNx);
+      for (G4int dy = -layer; dy <= layer; ++dy)
       {
-        for (G4int cz = iz0; cz <= iz1; ++cz)
+        const G4int cy = modulo(iy + dy, fGridNy);
+        for (G4int dz = -layer; dz <= layer; ++dz)
         {
+          const G4int cz = modulo(iz + dz, fGridNz);
           const auto &cell = fGridCells[FlatCellIndex(cx, cy, cz)];
           for (G4int sphereId : cell)
           {
@@ -804,7 +764,7 @@ StageDReentrySampler::NearestSurface StageDReentrySampler::FindNearestParticleSu
             fCandidateVisitStamps[sphereIndex] = fCandidateVisitToken;
 
             const MicroSphere &sphere = fSpheres[sphereIndex];
-            const G4ThreeVector offset = position - sphere.center;
+            const G4ThreeVector offset = MinimumImageDelta(position, sphere.center);
             const G4double distance = offset.mag();
             const G4double clearance = distance - sphere.radius;
             if (clearance < best.clearance)
@@ -965,8 +925,8 @@ G4bool StageDReentrySampler::PointToCell(const G4ThreeVector &point,
 
   auto coordToCell = [&](G4double coord, G4double halfExtent, G4int dim)
   {
-    const G4double shifted = (coord + halfExtent) / fGridCellSize;
-    return std::clamp(static_cast<G4int>(std::floor(shifted)), 0, dim - 1);
+    const G4double normalized = (coord + halfExtent) / (2.0 * halfExtent);
+    return std::clamp(static_cast<G4int>(std::floor(normalized * dim)), 0, dim - 1);
   };
 
   ix = coordToCell(point.x(), fHalfX, fGridNx);
@@ -997,21 +957,21 @@ void StageDReentrySampler::CollectCandidateSphereIds(
   }
   ++fCandidateVisitToken;
 
+  const auto modulo = [](G4int value, G4int count)
+  {
+    const G4int result = value % count;
+    return result < 0 ? result + count : result;
+  };
+
   for (G4int dx = -1; dx <= 1; ++dx)
   {
-    const G4int cx = ix + dx;
-    if (cx < 0 || cx >= fGridNx)
-      continue;
+    const G4int cx = modulo(ix + dx, fGridNx);
     for (G4int dy = -1; dy <= 1; ++dy)
     {
-      const G4int cy = iy + dy;
-      if (cy < 0 || cy >= fGridNy)
-        continue;
+      const G4int cy = modulo(iy + dy, fGridNy);
       for (G4int dz = -1; dz <= 1; ++dz)
       {
-        const G4int cz = iz + dz;
-        if (cz < 0 || cz >= fGridNz)
-          continue;
+        const G4int cz = modulo(iz + dz, fGridNz);
 
         const auto &cell = fGridCells[FlatCellIndex(cx, cy, cz)];
         for (G4int sphereId : cell)
@@ -1025,6 +985,20 @@ void StageDReentrySampler::CollectCandidateSphereIds(
       }
     }
   }
+}
+
+G4ThreeVector StageDReentrySampler::MinimumImageDelta(
+    const G4ThreeVector &point,
+    const G4ThreeVector &center) const
+{
+  G4ThreeVector delta = point - center;
+  const G4double lengthX = 2.0 * fHalfX;
+  const G4double lengthY = 2.0 * fHalfY;
+  const G4double lengthZ = 2.0 * fHalfZ;
+  delta.setX(delta.x() - lengthX * std::nearbyint(delta.x() / lengthX));
+  delta.setY(delta.y() - lengthY * std::nearbyint(delta.y() / lengthY));
+  delta.setZ(delta.z() - lengthZ * std::nearbyint(delta.z() / lengthZ));
+  return delta;
 }
 
 G4double StageDReentrySampler::HalfExtentX() const

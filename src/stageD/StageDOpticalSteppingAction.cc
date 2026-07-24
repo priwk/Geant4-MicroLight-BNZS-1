@@ -81,14 +81,9 @@ namespace
     return process->GetProcessName();
   }
 
-  G4bool StartsWith(const G4String &s, const char *prefix)
-  {
-    const std::string value = s;
-    const std::string p = prefix;
-    return value.rfind(p, 0) == 0;
-  }
-
-  DetectorConstruction::Phase PhaseFromPhysicalVolume(const G4VPhysicalVolume *pv)
+  DetectorConstruction::Phase PhaseFromPhysicalVolume(
+      const G4VPhysicalVolume *pv,
+      const DetectorConstruction *detector)
   {
     if (pv == nullptr)
       return DetectorConstruction::Phase::World;
@@ -97,16 +92,9 @@ namespace
     if (lv == nullptr)
       return DetectorConstruction::Phase::World;
 
-    const auto &lvName = lv->GetName();
-    if (lvName == "BN_LV" || StartsWith(lvName, "BN_ClipLV_"))
-      return DetectorConstruction::Phase::BN;
-    if (lvName == "ZnS_LV" || StartsWith(lvName, "ZnS_ClipLV_"))
-      return DetectorConstruction::Phase::ZnS;
-    if (lvName == "MatrixLV")
-      return DetectorConstruction::Phase::Matrix;
-    if (lvName == "WorldLV")
-      return DetectorConstruction::Phase::World;
-    return DetectorConstruction::Phase::Unknown;
+    return detector != nullptr
+               ? detector->GetPhaseFromLogicalVolume(lv)
+               : DetectorConstruction::Phase::Unknown;
   }
 
   G4bool IsOnRveSurface(const G4ThreeVector &position,
@@ -426,8 +414,8 @@ namespace
     const G4double tolerance =
         G4GeometryTolerance::GetInstance()->GetSurfaceTolerance();
     const G4double offset = std::max(4.0 * tolerance, 4.0 * kBoundaryEpsilon);
-    return detector->FindPhaseAtPoint(step->GetPostStepPoint()->GetPosition() +
-                                      offset * direction.unit());
+    return detector->FindPeriodicPhaseAtPoint(step->GetPostStepPoint()->GetPosition() +
+                                              offset * direction.unit());
   }
 
   void RecordCompleteEncounter(StageDPhotonEventRecord &event,
@@ -548,6 +536,36 @@ namespace
       ++event.num_reentry_fallback_any_portal;
   }
 
+  G4bool PushOpticalContinuation(
+      G4Track *track,
+      const G4ThreeVector &direction,
+      const G4ThreeVector &polarization,
+      G4double kineticEnergy,
+      const G4ThreeVector &position)
+  {
+    auto *stackManager = G4EventManager::GetEventManager()->GetStackManager();
+    if (track == nullptr || stackManager == nullptr || direction.mag2() <= 0.0)
+      return false;
+
+    auto *dynamicParticle = new G4DynamicParticle(
+        G4OpticalPhoton::OpticalPhotonDefinition(),
+        direction.unit(),
+        kineticEnergy);
+    dynamicParticle->SetPolarization(polarization);
+
+    auto *continuationTrack = new G4Track(
+        dynamicParticle,
+        track->GetGlobalTime(),
+        position);
+    continuationTrack->SetTrackID(track->GetTrackID());
+    continuationTrack->SetParentID(track->GetParentID());
+    continuationTrack->SetLocalTime(track->GetLocalTime());
+    continuationTrack->SetProperTime(track->GetProperTime());
+    continuationTrack->SetWeight(track->GetWeight());
+    stackManager->PushOneTrack(continuationTrack);
+    return true;
+  }
+
   G4int PhaseFunctionBin(const G4double cosTheta)
   {
     constexpr G4double kMin = -1.0;
@@ -608,7 +626,10 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
     return true;
   }
 
-  if (fConfig->stageD_boundary_mode != "same_phase_reentry")
+  const G4bool isPeriodicWrap =
+      fConfig->stageD_boundary_mode == "periodic_wrap";
+  if (!isPeriodicWrap &&
+      fConfig->stageD_boundary_mode != "same_phase_reentry")
     return false;
 
   if (event.num_reentry >= fConfig->stageD_max_reentry)
@@ -616,13 +637,6 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
     fEventAction->SetFinalStatus("max_reentry", false);
     track->SetTrackStatus(fStopAndKill);
     return true;
-  }
-
-  if (fReentrySampler == nullptr)
-  {
-    fReentrySampler = new StageDReentrySampler(detector, fConfig);
-    if (fRunAction != nullptr)
-      fRunAction->SetReentryPortalSummary(fReentrySampler->GetPortalSummary());
   }
 
   const G4ThreeVector prePos = step->GetPreStepPoint()->GetPosition();
@@ -657,6 +671,89 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
   G4ThreeVector exitPoint = postPos;
   ComputeExitPointOnRveBox(prePos, oldDir, detector, exitPoint);
   const G4ThreeVector exitInsidePoint = exitPoint - kBoundaryEpsilon * oldDir.unit();
+
+  if (isPeriodicWrap)
+  {
+    StageDReentrySampler::ReentryContext ctx;
+    ctx.phase = prePhase;
+    ctx.prePos = prePos;
+    ctx.postPos = postPos;
+    ctx.oldDir = oldDir;
+    ctx.exitPoint = exitPoint;
+    ctx.exitInsidePoint = exitInsidePoint;
+    ctx.wavelengthNm = event.wavelength_nm;
+    ctx.eventID = event.photonID;
+    ctx.reentryIndex = event.num_reentry + event.num_reentry_failed + 1;
+
+    StageDReentrySampler::ReentryDiagnostics diag;
+    diag.strategy = "periodic_wrap";
+    diag.fallbackLevel = "none";
+    diag.exitPhase = prePhase;
+    diag.exitInsidePoint = exitInsidePoint;
+
+    if (!detector->UsesPeriodicTransport())
+    {
+      diag.fallbackLevel = "periodic_geometry_required";
+      if (fRunAction != nullptr)
+        fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+      ++event.num_reentry_failed;
+      fEventAction->SetFinalStatus("periodic_geometry_required", false);
+      track->SetTrackStatus(fStopAndKill);
+      return true;
+    }
+
+    const G4ThreeVector newPosition = detector->WrapToPrimaryCellInside(
+        postPos, oldDir, kBoundaryEpsilon);
+    const auto entryPhase = detector->FindPhaseAtPoint(newPosition);
+    diag.entryPhase = entryPhase;
+    diag.entryPoint = newPosition;
+
+    if (!IsReentryPhase(prePhase) || entryPhase != prePhase)
+    {
+      diag.fallbackLevel = "phase_mismatch";
+      if (fRunAction != nullptr)
+        fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+      ++event.num_reentry_failed;
+      fEventAction->SetFinalStatus("periodic_phase_mismatch", false);
+      track->SetTrackStatus(fStopAndKill);
+      return true;
+    }
+
+    if (!PushOpticalContinuation(
+            track,
+            oldDir,
+            oldPolarization,
+            step->GetPreStepPoint()->GetKineticEnergy(),
+            newPosition))
+    {
+      diag.fallbackLevel = "stack_unavailable";
+      if (fRunAction != nullptr)
+        fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+      ++event.num_reentry_failed;
+      fEventAction->SetFinalStatus("reentry_failed", false);
+      track->SetTrackStatus(fStopAndKill);
+      return true;
+    }
+
+    if (fRunAction != nullptr)
+      fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+    ++event.num_reentry;
+    if (prePhase == DetectorConstruction::Phase::BN)
+      ++event.num_reentry_BN;
+    else if (prePhase == DetectorConstruction::Phase::ZnS)
+      ++event.num_reentry_ZnS;
+    else if (prePhase == DetectorConstruction::Phase::Matrix)
+      ++event.num_reentry_matrix;
+    track->SetTrackStatus(fStopAndKill);
+    return true;
+  }
+
+  if (fReentrySampler == nullptr)
+  {
+    fReentrySampler = new StageDReentrySampler(detector, fConfig);
+    if (fRunAction != nullptr)
+      fRunAction->SetReentryPortalSummary(fReentrySampler->GetPortalSummary());
+  }
 
   auto phase = prePhase;
   if (!IsReentryPhase(phase))
@@ -724,31 +821,18 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
     return true;
   }
 
-  auto *dynamicParticle = new G4DynamicParticle(
-      G4OpticalPhoton::OpticalPhotonDefinition(),
-      oldDir,
-      step->GetPreStepPoint()->GetKineticEnergy());
-  dynamicParticle->SetPolarization(oldPolarization);
-
-  auto *continuationTrack = new G4Track(
-      dynamicParticle,
-      track->GetGlobalTime(),
-      newPosition);
-  continuationTrack->SetLocalTime(track->GetLocalTime());
-  continuationTrack->SetProperTime(track->GetProperTime());
-  continuationTrack->SetWeight(track->GetWeight());
-  continuationTrack->SetParentID(track->GetParentID());
-
-  auto *stackManager = G4EventManager::GetEventManager()->GetStackManager();
-  if (stackManager == nullptr)
+  if (!PushOpticalContinuation(
+          track,
+          oldDir,
+          oldPolarization,
+          step->GetPreStepPoint()->GetKineticEnergy(),
+          newPosition))
   {
-    delete continuationTrack;
     ++event.num_reentry_failed;
     fEventAction->SetFinalStatus("reentry_failed", false);
     track->SetTrackStatus(fStopAndKill);
     return true;
   }
-  stackManager->PushOneTrack(continuationTrack);
 
   ++event.num_reentry;
   if (phase == DetectorConstruction::Phase::BN)
@@ -801,7 +885,8 @@ G4bool StageDOpticalSteppingAction::HandleLimitKills(const G4Step *step, G4Track
   {
     const auto *prePoint = step->GetPreStepPoint();
     const auto *prePV = (prePoint != nullptr) ? prePoint->GetPhysicalVolume() : nullptr;
-    const auto phase = PhaseFromPhysicalVolume(prePV);
+    const auto *detector = ResolveDetector();
+    const auto phase = PhaseFromPhysicalVolume(prePV, detector);
     if ((event.encounter_active ||
          event.source_inside_particle_pending_exit) &&
         IsParticlePhase(phase))
@@ -851,10 +936,10 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
       (detector != nullptr && IsRveOuterBoundaryStep(step, detector, &outerFace));
   const auto *prePV = prePoint->GetPhysicalVolume();
   const auto *postPV = postPoint->GetPhysicalVolume();
-  const auto prePhase = PhaseFromPhysicalVolume(prePV);
+  const auto prePhase = PhaseFromPhysicalVolume(prePV, detector);
   const auto postPhase =
       isOuterRveBoundary ? DetectorConstruction::Phase::World
-                         : PhaseFromPhysicalVolume(postPV);
+                         : PhaseFromPhysicalVolume(postPV, detector);
 
   const G4double stepLengthUm = step->GetStepLength() / um;
   if (prePhase == DetectorConstruction::Phase::BN)
@@ -875,7 +960,8 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
   if (isOuterRveBoundary)
   {
     ++event.num_outer_boundary_hits;
-    AccumulateOuterBoundaryStatus(event, boundaryStatus);
+    if (fConfig == nullptr || fConfig->stageD_boundary_mode != "periodic_wrap")
+      AccumulateOuterBoundaryStatus(event, boundaryStatus);
 
     const G4int reentryFailedBefore = event.num_reentry_failed;
     const G4int reentryBefore = event.num_reentry;

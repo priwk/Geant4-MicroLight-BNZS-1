@@ -8,8 +8,6 @@ enum class RunMode
 {
   StageA_NeutronPatch,  // 固定 50x50x30 um^3 微结构 patch 做热中子等效化
   StageB_ReplayAlphaLi, // 读取 capture CSV，重放 alpha / Li7
-  StageC_OpticalStub,   // 预留光学接口骨架
-  StageC_OpticalRVE,    // 读取 ZnS step source，原位追踪 optical photon
   StageD_OpticalHomogenization // 随机 RVE 统计均匀化光学输运参数
 };
 
@@ -39,16 +37,14 @@ public:
   // ---- placement 输入控制 ----
   bool useRandomPlacement;
   std::string placementFilePath;
+  std::string placementGeometryMode;
+  std::string periodicImagesFilePath;
 
   // ---- Stage B 输入 ----
   std::string captureCsvPath;
   std::string captureInputDir;
 
-  // ---- Stage C 预留输入 ----
-  std::string opticalSourcePath;
-  std::string sourceSampling;
-  int opticalSamplesPerStep;
-  bool writeStageCPhotonCsv;
+  // ---- 共用光学材料参数 ----
   bool opticalParamsProvided;
   double opticalMatrixRIndex;
   double opticalMatrixAbsLengthUm;

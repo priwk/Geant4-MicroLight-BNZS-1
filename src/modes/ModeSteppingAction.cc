@@ -10,9 +10,6 @@
 #include "SteppingAction.hh"
 #include "StageARunAction.hh"
 #include "StageASteppingAction.hh"
-#include "StageCOpticalPrimaryGeneratorAction.hh"
-#include "StageCOpticalRunAction.hh"
-#include "StageCOpticalSteppingAction.hh"
 #include "StageDOpticalEventAction.hh"
 #include "StageDOpticalRunAction.hh"
 #include "StageDOpticalSteppingAction.hh"
@@ -27,17 +24,13 @@ ModeSteppingAction::ModeSteppingAction(ModeRunAction *modeRunAction,
                                        ModePrimaryGeneratorAction *modePrimaryAction,
                                        EventAction *stageBEventAction,
                                        PrimaryGeneratorAction *stageBPrimaryAction,
-                                       StageCOpticalPrimaryGeneratorAction *stageCPrimaryAction,
                                        StageDOpticalEventAction *stageDEventAction)
     : G4UserSteppingAction(),
       fConfig(config),
       fModePrimaryAction(modePrimaryAction),
-      fStageCRunAction(nullptr),
-      fStageCPrimaryAction(stageCPrimaryAction),
       fStageDRunAction(nullptr),
       fStageBSteppingAction(nullptr),
       fStageASteppingAction(nullptr),
-      fStageCSteppingAction(nullptr),
       fStageDSteppingAction(nullptr)
 {
     if (fConfig == nullptr)
@@ -74,15 +67,6 @@ ModeSteppingAction::ModeSteppingAction(ModeRunAction *modeRunAction,
         fStageBSteppingAction = new SteppingAction(stageBEventAction, stageBPrimaryAction);
     }
 
-    fStageCRunAction = modeRunAction->GetStageCRunAction();
-    if (fStageCRunAction != nullptr && fStageCPrimaryAction != nullptr)
-    {
-        fStageCSteppingAction = new StageCOpticalSteppingAction(
-            fStageCRunAction,
-            fStageCPrimaryAction,
-            fConfig);
-    }
-
     fStageDRunAction = modeRunAction->GetStageDRunAction();
     if (fStageDRunAction != nullptr && stageDEventAction != nullptr)
     {
@@ -102,7 +86,6 @@ ModeSteppingAction::~ModeSteppingAction()
 {
     delete fStageASteppingAction;
     delete fStageBSteppingAction;
-    delete fStageCSteppingAction;
     delete fStageDSteppingAction;
 }
 
@@ -168,39 +151,6 @@ void ModeSteppingAction::UserSteppingAction(const G4Step *step)
             return;
         }
         fStageBSteppingAction->UserSteppingAction(step);
-        return;
-
-    case RunMode::StageC_OpticalStub:
-        G4Exception("ModeSteppingAction::UserSteppingAction",
-                    "BNZS_MODE_STEP_007", FatalException,
-                    "RunMode StageC_OpticalStub is selected, but Stage C stepping action is not implemented yet.");
-        return;
-
-    case RunMode::StageC_OpticalRVE:
-        if (fStageCSteppingAction == nullptr)
-        {
-            if (fStageCPrimaryAction == nullptr && fModePrimaryAction != nullptr)
-            {
-                fStageCPrimaryAction = fModePrimaryAction->GetStageCPrimaryAction();
-            }
-
-            if (fStageCRunAction != nullptr && fStageCPrimaryAction != nullptr)
-            {
-                fStageCSteppingAction = new StageCOpticalSteppingAction(
-                    fStageCRunAction,
-                    fStageCPrimaryAction,
-                    fConfig);
-            }
-
-            if (fStageCSteppingAction == nullptr)
-            {
-                G4Exception("ModeSteppingAction::UserSteppingAction",
-                            "BNZS_MODE_STEP_009", FatalException,
-                            "Stage C optical stepping action is null after lazy initialization.");
-                return;
-            }
-        }
-        fStageCSteppingAction->UserSteppingAction(step);
         return;
 
     case RunMode::StageD_OpticalHomogenization:

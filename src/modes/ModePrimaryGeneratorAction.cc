@@ -3,7 +3,6 @@
 #include "AnalysisConfig.hh"
 #include "PrimaryGeneratorAction.hh"
 #include "StageAPrimaryGeneratorAction.hh"
-#include "StageCOpticalPrimaryGeneratorAction.hh"
 #include "StageDOpticalPrimaryGeneratorAction.hh"
 
 #include "G4Event.hh"
@@ -15,7 +14,6 @@ ModePrimaryGeneratorAction::ModePrimaryGeneratorAction(AnalysisConfig *config)
       fConfig(config),
       fStageBPrimary(nullptr),
       fStageAPrimary(nullptr),
-      fStageCPrimary(nullptr),
       fStageDPrimary(nullptr)
 {
     if (fConfig == nullptr)
@@ -36,7 +34,6 @@ ModePrimaryGeneratorAction::~ModePrimaryGeneratorAction()
 {
     delete fStageAPrimary;
     delete fStageBPrimary;
-    delete fStageCPrimary;
     delete fStageDPrimary;
 }
 
@@ -68,20 +65,6 @@ void ModePrimaryGeneratorAction::GeneratePrimaries(G4Event *event)
         fStageBPrimary->GeneratePrimaries(event);
         return;
 
-    case RunMode::StageC_OpticalStub:
-        G4Exception("ModePrimaryGeneratorAction::GeneratePrimaries",
-                    "BNZS_MODE_PRI_005", FatalException,
-                    "RunMode StageC_OpticalStub is selected, but Stage C primary generator is not implemented yet.");
-        return;
-
-    case RunMode::StageC_OpticalRVE:
-        if (fStageCPrimary == nullptr)
-        {
-            fStageCPrimary = new StageCOpticalPrimaryGeneratorAction(fConfig);
-        }
-        fStageCPrimary->GeneratePrimaries(event);
-        return;
-
     case RunMode::StageD_OpticalHomogenization:
         if (fStageDPrimary == nullptr)
         {
@@ -108,17 +91,6 @@ PrimaryGeneratorAction *ModePrimaryGeneratorAction::GetStageBPrimaryAction() con
             new PrimaryGeneratorAction(fConfig);
     }
     return fStageBPrimary;
-}
-
-StageCOpticalPrimaryGeneratorAction *ModePrimaryGeneratorAction::GetStageCPrimaryAction()
-{
-    if (fStageCPrimary == nullptr &&
-        fConfig != nullptr &&
-        fConfig->runMode == RunMode::StageC_OpticalRVE)
-    {
-        fStageCPrimary = new StageCOpticalPrimaryGeneratorAction(fConfig);
-    }
-    return fStageCPrimary;
 }
 
 StageDOpticalPrimaryGeneratorAction *ModePrimaryGeneratorAction::GetStageDPrimaryAction()

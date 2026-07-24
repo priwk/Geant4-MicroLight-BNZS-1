@@ -125,7 +125,7 @@ G4ThreeVector StageDOpticalPrimaryGeneratorAction::SampleUniformPointInZnSSphere
   }
 
   const G4double radius = selected->radius * std::cbrt(G4UniformRand());
-  return selected->center + radius * RandomUnitVector();
+  return detector->WrapToPrimaryCell(selected->center + radius * RandomUnitVector());
 }
 
 G4ThreeVector StageDOpticalPrimaryGeneratorAction::SampleUniformPointInWholeRve(

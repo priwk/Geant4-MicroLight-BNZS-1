@@ -43,6 +43,7 @@ private:
   void WriteReentryDiagnosticsHeader();
   void WriteSummaryFile() const;
   void WritePhaseFunctionFile() const;
+  void WriteGeometryMetadataFile(const DetectorConstruction *detector) const;
 
 private:
   AnalysisConfig *fConfig;

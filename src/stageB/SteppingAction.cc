@@ -14,6 +14,10 @@
 #include "G4TrackStatus.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4RunManager.hh"
+#include "G4DynamicParticle.hh"
+#include "G4EventManager.hh"
+#include "G4StackManager.hh"
+#include "G4VUserTrackInformation.hh"
 
 #include <cmath>
 #include <fstream>
@@ -23,11 +27,42 @@
 // helpers
 namespace
 {
-    G4bool StartsWith(const G4String &s, const char *prefix)
+    class PeriodicTrackInfo final : public G4VUserTrackInformation
     {
-        const std::string value = s;
-        const std::string p = prefix;
-        return value.rfind(p, 0) == 0;
+    public:
+        PeriodicTrackInfo(G4int originalTrackId, G4int completedSteps)
+            : fOriginalTrackId(originalTrackId),
+              fCompletedSteps(completedSteps)
+        {
+        }
+
+        void Print() const override {}
+        G4int OriginalTrackId() const { return fOriginalTrackId; }
+        G4int CompletedSteps() const { return fCompletedSteps; }
+
+    private:
+        G4int fOriginalTrackId;
+        G4int fCompletedSteps;
+    };
+
+    const PeriodicTrackInfo *GetPeriodicTrackInfo(const G4Track *track)
+    {
+        return track != nullptr
+                   ? dynamic_cast<const PeriodicTrackInfo *>(track->GetUserInformation())
+                   : nullptr;
+    }
+
+    G4int OutputTrackId(const G4Track *track)
+    {
+        const auto *info = GetPeriodicTrackInfo(track);
+        return info != nullptr ? info->OriginalTrackId() : track->GetTrackID();
+    }
+
+    G4int OutputStepId(const G4Track *track)
+    {
+        const auto *info = GetPeriodicTrackInfo(track);
+        return (info != nullptr ? info->CompletedSteps() : 0) +
+               track->GetCurrentStepNumber();
     }
 
     G4bool IsTrackedHeavyParticle(const G4Track *track)
@@ -73,7 +108,7 @@ namespace
         return def->GetParticleName();
     }
 
-    std::string PhaseLabel(const G4VPhysicalVolume *pv)
+    std::string PhaseLabel(const G4VPhysicalVolume *pv, const DetectorConstruction *detector)
     {
         if (!pv)
             return "outside";
@@ -82,15 +117,16 @@ namespace
         if (!lv)
             return "outside";
 
-        const auto &lvName = lv->GetName();
-
-        if (lvName == "BN_LV" || StartsWith(lvName, "BN_ClipLV_"))
+        const auto phase = detector != nullptr
+                               ? detector->GetPhaseFromLogicalVolume(lv)
+                               : DetectorConstruction::Phase::Unknown;
+        if (phase == DetectorConstruction::Phase::BN)
             return "BN";
-        if (lvName == "ZnS_LV" || StartsWith(lvName, "ZnS_ClipLV_"))
+        if (phase == DetectorConstruction::Phase::ZnS)
             return "ZnS";
-        if (lvName == "MatrixLV")
+        if (phase == DetectorConstruction::Phase::Matrix)
             return "binder_void";
-        if (lvName == "WorldLV")
+        if (phase == DetectorConstruction::Phase::World)
             return "outside";
 
         return "other";
@@ -101,14 +137,9 @@ namespace
         return (phase == "outside");
     }
 
-    G4double PatchHalfXYUm(const DetectorConstruction *det)
-    {
-        return 0.5 * det->GetPatchXYUm();
-    }
-
     G4double PatchHalfZUm(const DetectorConstruction *det)
     {
-        return 0.5 * det->GetEffectiveLocalThickness() / um;
+        return det->GetBoxHalfZ() / um;
     }
 
     std::string ExitFaceLabel(const G4ThreeVector &position, const DetectorConstruction *det)
@@ -117,20 +148,21 @@ namespace
         const G4double xUm = position.x() / um;
         const G4double yUm = position.y() / um;
         const G4double zUm = position.z() / um;
-        const G4double halfXYUm = PatchHalfXYUm(det);
+        const G4double halfXUm = det->GetBoxHalfX() / um;
+        const G4double halfYUm = det->GetBoxHalfY() / um;
         const G4double halfZUm = PatchHalfZUm(det);
 
         if (zUm >= halfZUm - tolUm)
             return "+Z";
         if (zUm <= -halfZUm + tolUm)
             return "-Z";
-        if (xUm >= halfXYUm - tolUm)
+        if (xUm >= halfXUm - tolUm)
             return "+X";
-        if (xUm <= -halfXYUm + tolUm)
+        if (xUm <= -halfXUm + tolUm)
             return "-X";
-        if (yUm >= halfXYUm - tolUm)
+        if (yUm >= halfYUm - tolUm)
             return "+Y";
-        if (yUm <= -halfXYUm + tolUm)
+        if (yUm <= -halfYUm + tolUm)
             return "-Y";
         return "unknown";
     }
@@ -148,6 +180,45 @@ namespace
             return RunAction::BoundaryExitClass::PhysicalSurfaceExit;
         }
         return RunAction::BoundaryExitClass::UnexpectedArtificialExit;
+    }
+
+    G4bool ContinueAcrossPeriodicBoundary(
+        G4Track *track,
+        const DetectorConstruction *detector,
+        const G4ThreeVector &exitPosition,
+        const G4ThreeVector &direction)
+    {
+        if (track == nullptr || detector == nullptr || direction.mag2() <= 0.0)
+            return false;
+
+        auto *stackManager = G4EventManager::GetEventManager()->GetStackManager();
+        if (stackManager == nullptr)
+            return false;
+
+        auto *dynamicParticle = new G4DynamicParticle(*track->GetDynamicParticle());
+        dynamicParticle->SetMomentumDirection(direction.unit());
+
+        auto *continuationTrack = new G4Track(
+            dynamicParticle,
+            track->GetGlobalTime(),
+            detector->WrapToPrimaryCellInside(exitPosition, direction));
+        const auto *previousInfo = GetPeriodicTrackInfo(track);
+        const G4int originalTrackId = previousInfo != nullptr
+                                          ? previousInfo->OriginalTrackId()
+                                          : track->GetTrackID();
+        const G4int completedSteps =
+            (previousInfo != nullptr ? previousInfo->CompletedSteps() : 0) +
+            track->GetCurrentStepNumber();
+        continuationTrack->SetTrackID(originalTrackId);
+        continuationTrack->SetParentID(track->GetParentID());
+        continuationTrack->SetLocalTime(track->GetLocalTime());
+        continuationTrack->SetProperTime(track->GetProperTime());
+        continuationTrack->SetWeight(track->GetWeight());
+        continuationTrack->SetUserInformation(
+            new PeriodicTrackInfo(originalTrackId, completedSteps));
+        stackManager->PushOneTrack(continuationTrack);
+        track->SetTrackStatus(fStopAndKill);
+        return true;
     }
 }
 
@@ -187,8 +258,10 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
     const auto *prePV = prePoint->GetPhysicalVolume();
     const auto *postPV = postPoint->GetPhysicalVolume();
 
-    const std::string phasePre = PhaseLabel(prePV);
-    const std::string phasePost = PhaseLabel(postPV);
+    const auto *detector = dynamic_cast<const DetectorConstruction *>(
+        G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+    const std::string phasePre = PhaseLabel(prePV, detector);
+    const std::string phasePost = PhaseLabel(postPV, detector);
 
     // Do not keep tracking into world vacuum after leaving the patch.
     // But record the boundary-crossing step itself.
@@ -250,8 +323,8 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
             << bnCenter.z() / um << ","
             << fPrimaryAction->GetCurrentAlphaLiReplayIndex() << ","
             << fPrimaryAction->GetCurrentAlphaLiReplayCount() << ","
-            << track->GetTrackID() << ","
-            << track->GetCurrentStepNumber() << ","
+            << OutputTrackId(track) << ","
+            << OutputStepId(track) << ","
             << ParticleLabel(track) << ","
             << phasePre << ","
             << phasePost << ","
@@ -282,8 +355,8 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
             << anchor.source_event_uid << ","
             << anchor.eventID << ","
             << anchor.record_index << ","
-            << track->GetTrackID() << ","
-            << track->GetCurrentStepNumber() << ","
+            << OutputTrackId(track) << ","
+            << OutputStepId(track) << ","
             << ParticleLabel(track) << ","
             << phasePre << ","
             << phasePost << ","
@@ -303,18 +376,31 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
             << "\n";
     }
 
-    // Kill track once it exits the microstructure into world/outside
+    // Preserve true screen-surface exits; wrap artificial RVE faces exactly.
     if (!IsOutsidePhase(phasePre) && IsOutsidePhase(phasePost))
     {
+        const auto anchor = (fEventAction != nullptr)
+                                ? fEventAction->MakeCurrentCaptureAnchorRow()
+                                : RunAction::CaptureAnchorRow{};
+        const std::string exitFace = detector != nullptr
+                                         ? ExitFaceLabel(xPost, detector)
+                                         : "unknown";
+        const auto exitClass = ClassifyBoundaryExit(anchor.surface_mode, exitFace);
+        const G4bool isPhysicalSurface =
+            exitClass == RunAction::BoundaryExitClass::PhysicalSurfaceExit;
+
+        if (!isPhysicalSurface && detector != nullptr &&
+            detector->UsesPeriodicTransport() &&
+            ContinueAcrossPeriodicBoundary(
+                track, detector, xPost, prePoint->GetMomentumDirection()))
+        {
+            return;
+        }
+
         if (runAction && fEventAction)
         {
-            const auto *det = dynamic_cast<const DetectorConstruction *>(
-                G4RunManager::GetRunManager()->GetUserDetectorConstruction());
-            if (det)
+            if (detector)
             {
-                const auto anchor = fEventAction->MakeCurrentCaptureAnchorRow();
-                const std::string exitFace = ExitFaceLabel(xPost, det);
-                const auto exitClass = ClassifyBoundaryExit(anchor.surface_mode, exitFace);
                 RunAction::UnexpectedBoundaryExitRow exitRow;
                 exitRow.physical_event_uid = anchor.physical_event_uid;
                 exitRow.source_event_uid = anchor.source_event_uid;
@@ -326,8 +412,8 @@ void SteppingAction::UserSteppingAction(const G4Step *step)
                 exitRow.placement_file = anchor.placement_file;
                 exitRow.surface_mode = anchor.surface_mode;
                 exitRow.particle = ParticleLabel(track);
-                exitRow.trackID = track->GetTrackID();
-                exitRow.stepID = track->GetCurrentStepNumber();
+                exitRow.trackID = OutputTrackId(track);
+                exitRow.stepID = OutputStepId(track);
                 exitRow.phase_pre = phasePre;
                 exitRow.phase_post = phasePost;
                 exitRow.exit_face = exitFace;

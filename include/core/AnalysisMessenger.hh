@@ -26,12 +26,11 @@ private:
   G4UIcmdWithAString *fRunModeCmd;
   G4UIcmdWithAString *fCaptureCsvCmd;
   G4UIcmdWithAString *fCaptureDirCmd;
-  G4UIcmdWithAString *fOpticalSourceCmd;
-  G4UIcmdWithAString *fSourceSamplingCmd;
   G4UIcmdWithAString *fPlacementFileCmd;
+  G4UIcmdWithAString *fPlacementGeometryModeCmd;
+  G4UIcmdWithAString *fPeriodicImagesFileCmd;
   G4UIcmdWithABool *fUseRandomPlacementCmd;
   G4UIcmdWithABool *fAllowThicknessEqualCmd;
-  G4UIcmdWithABool *fWriteStageCPhotonCsvCmd;
   G4UIdirectory *fStageDDir;
   G4UIcmdWithADouble *fStageDWavelengthNmCmd;
   G4UIcmdWithAString *fStageDSourceModeCmd;
@@ -52,7 +51,6 @@ private:
   G4UIcommand *fStageDClearanceBinEdgesCmd;
   G4UIcmdWithAnInteger *fStageDMaxParticleReentryTrialsCmd;
   G4UIcmdWithAnInteger *fStageDMaxPortalFallbackLevelCmd;
-  G4UIcommand *fOpticalSamplesPerStepCmd;
   G4UIcommand *fOpticalParamsCmd;
   G4UIcommand *fWeightRatioCmd;
 };

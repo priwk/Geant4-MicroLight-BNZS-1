@@ -35,6 +35,7 @@ public:
   ~PrimaryGeneratorAction() override;
 
   void GeneratePrimaries(G4Event *event) override;
+  void RefreshInputSelectionFromConfig();
 
   G4ParticleGun *GetParticleGun() const { return fParticleGun; }
 
@@ -82,6 +83,7 @@ private:
   G4bool SelectBNSphereForTargetZ(
       G4double targetZ,
       G4ThreeVector &chosenCenter,
+      G4double &chosenRadius,
       G4double &usedZ,
       G4bool &usedFallback) const;
 
@@ -132,6 +134,8 @@ private:
   G4int fAlphaLiReplayPerCapture = 1;
   G4int fCurrentAlphaLiReplayIndex = 0;
   G4int fRemainingReplaysForCurrentCapture = 0;
+  std::string fInitializedCaptureCsvPath;
+  std::string fInitializedCaptureInputDir;
 
   // current event cache
   CaptureRecord fCurrentRecord;

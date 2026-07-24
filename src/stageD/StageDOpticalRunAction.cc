@@ -359,6 +359,40 @@ void StageDOpticalRunAction::OpenOutputs()
   WriteReentryDiagnosticsHeader();
 }
 
+void StageDOpticalRunAction::WriteGeometryMetadataFile(
+    const DetectorConstruction *detector) const
+{
+  if (detector == nullptr)
+    return;
+  const std::filesystem::path path =
+      std::filesystem::path(fOutputDir) / "rve_geometry_metadata.csv";
+  std::ofstream output(path);
+  if (!output)
+  {
+    G4Exception("StageDOpticalRunAction::WriteGeometryMetadataFile",
+                "BNZS_D_RUN_006", JustWarning,
+                ("Failed to write geometry metadata: " + path.string()).c_str());
+    return;
+  }
+  output << "format_version,seed,placement_file,periodic_images_file,geometry_mode,"
+            "box_x_um,box_y_um,box_z_um,unique_particles,geometry_copies,radius_classes,"
+            "phi_achieved,zns_to_bn_mass_ratio\n"
+         << std::setprecision(15)
+         << detector->GetPlacementFormatVersion() << ','
+         << detector->GetPlacementSeed() << ','
+         << CsvQuote(detector->GetLoadedPlacementFileForRecord()) << ','
+         << CsvQuote(detector->GetLoadedPeriodicImagesFileForRecord()) << ','
+         << CsvQuote(fConfig != nullptr ? fConfig->placementGeometryMode : "unknown") << ','
+         << detector->GetBoxXUm() << ','
+         << detector->GetBoxYUm() << ','
+         << detector->GetBoxZUm() << ','
+         << detector->GetUniqueParticleCount() << ','
+         << detector->GetGeometryCopyCount() << ','
+         << detector->GetRadiusClassCount() << ','
+         << detector->GetPlacementPhiAchieved() << ','
+         << detector->GetPlacementZnSToBNMassRatio() << '\n';
+}
+
 void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
 {
   (void)run;
@@ -378,6 +412,7 @@ void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
   fOutputDir = ResolveOutputDirectory();
 
   OpenOutputs();
+  WriteGeometryMetadataFile(detector);
 }
 
 void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &event)
@@ -926,20 +961,22 @@ void StageDOpticalRunAction::WriteSummaryFile() const
   }
 
   if (fConfig != nullptr &&
-      fConfig->stageD_boundary_mode == "same_phase_reentry" &&
+      (fConfig->stageD_boundary_mode == "same_phase_reentry" ||
+       fConfig->stageD_boundary_mode == "periodic_wrap") &&
       totalOuterBoundaryReentryFailed > 0)
   {
     G4cout << "[StageDOpticalRunAction] Warning: outer boundary re-entry failures detected."
            << " failed=" << totalOuterBoundaryReentryFailed
-           << ". Production same_phase_reentry runs should have zero failures."
+           << ". Production periodic runs should have zero failures."
            << G4endl;
   }
 
   if (fConfig != nullptr &&
-      fConfig->stageD_boundary_mode == "same_phase_reentry" &&
+      (fConfig->stageD_boundary_mode == "same_phase_reentry" ||
+       fConfig->stageD_boundary_mode == "periodic_wrap") &&
       std::abs(totalPathLengthWorldUm) > 1.0e-6)
   {
-    G4cout << "[StageDOpticalRunAction] Warning: nonzero World path length in same_phase_reentry mode."
+    G4cout << "[StageDOpticalRunAction] Warning: nonzero World path length in periodic boundary mode."
            << " path_length_World_um=" << totalPathLengthWorldUm
            << G4endl;
   }
@@ -1233,6 +1270,7 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << (fConfig ? fConfig->stageD_max_steps : 0) << ","
       << (fConfig ? fConfig->stageD_max_path_length_um : 0.0)
       << "\n";
+  fout.close();
 
   std::error_code copyEc;
   std::filesystem::copy_file(
@@ -1281,6 +1319,7 @@ void StageDOpticalRunAction::WritePhaseFunctionFile() const
          << probability << ","
          << density << "\n";
   }
+  fout.close();
 
   std::error_code copyEc;
   std::filesystem::copy_file(

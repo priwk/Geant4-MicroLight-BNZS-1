@@ -12,9 +12,6 @@ class EventAction;
 class PrimaryGeneratorAction;
 class SteppingAction;
 class StageASteppingAction;
-class StageCOpticalRunAction;
-class StageCOpticalPrimaryGeneratorAction;
-class StageCOpticalSteppingAction;
 class StageDOpticalRunAction;
 class StageDOpticalSteppingAction;
 class StageDOpticalEventAction;
@@ -27,7 +24,6 @@ public:
                      ModePrimaryGeneratorAction *modePrimaryAction,
                      EventAction *stageBEventAction,
                      PrimaryGeneratorAction *stageBPrimaryAction,
-                     StageCOpticalPrimaryGeneratorAction *stageCPrimaryAction,
                      StageDOpticalEventAction *stageDEventAction);
   ~ModeSteppingAction() override;
 
@@ -39,13 +35,10 @@ private:
 private:
   AnalysisConfig *fConfig;
   ModePrimaryGeneratorAction *fModePrimaryAction;
-  StageCOpticalRunAction *fStageCRunAction;
-  StageCOpticalPrimaryGeneratorAction *fStageCPrimaryAction;
   StageDOpticalRunAction *fStageDRunAction;
 
   SteppingAction *fStageBSteppingAction;
   StageASteppingAction *fStageASteppingAction;
-  StageCOpticalSteppingAction *fStageCSteppingAction;
   StageDOpticalSteppingAction *fStageDSteppingAction;
 };
 

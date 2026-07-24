@@ -32,36 +32,32 @@ StageD 的目标不是宏观厚度出光模拟，而是对单个随机 RVE 做�
 
 - `runMode = StageD_OpticalHomogenization`
 - `source_mode = uniform_all_phase`
-- `boundary_mode = same_phase_reentry`
+- `boundary_mode = periodic_wrap`
 - `reentry_mode = state_matched`
 - `particle_reentry_mode = sphere_q_mu`
 - `matrix_reentry_mode = clearance_binned_portal`
 - 输出逐 photon 事件表
 - 输出单 run summary 表
 
-当前没有实现：
+兼容模式：
 
-- `from_zns_step_sources`
-- `distance_matched_matrix`
-- strict periodic boundary
+- `same_phase_reentry` 保留旧统计重入算法，仅用于复现旧结果
 
 ## 3. 边界模型说明
 
-当前不是 strict periodic boundary。
+当前默认是严格周期坐标续传。
 
 当前实现的是：
 
-- `phase-conditioned statistical re-entry`
-- `same-phase statistical re-entry`
+- 光子在人工 RVE 面离开后，从对面同一周期坐标继续
+- 方向、偏振、能量、时间和权重保持不变
 
 含义：
 
 - 一个 Geant4 run 只使用一个 placement
-- 如果 photon 从 RVE 离开：
-  - 若离开前在 `BN` 或 `ZnS`，就在当前 placement 的同相球列表里随机重入
-  - 若离开前在 `Matrix`，就在当前 placement 的 matrix 区域里随机重入
+- 不执行随机 portal 重采样
 - 不跨 placement
-- 不要求几何周期连续
+- 要求 `format_version=3` 且 `pbc_clipped` 几何
 
 因此：
 
@@ -139,11 +135,11 @@ cat >/tmp/stageD_run.mac <<'EOF'
 
 /cfg/setRunMode StageD_OpticalHomogenization
 /cfg/setWeightRatio 1 2
-/cfg/setPlacementFile ../Input/placements/1-2/placement_f_0.64_0004.csv
+/cfg/setPlacementFile ../Input/output_pbc/1-2/placement_phi0.63998_seed1245082203.csv
 
 /cfg/stageD/setWavelengthNm 450
 /cfg/stageD/setSourceMode uniform_all_phase
-/cfg/stageD/setBoundaryMode same_phase_reentry
+/cfg/stageD/setBoundaryMode periodic_wrap
 /cfg/stageD/setReentryMode state_matched
 /cfg/stageD/setParticleReentryMode sphere_q_mu
 /cfg/stageD/setMatrixReentryMode clearance_binned_portal
@@ -163,7 +159,7 @@ EOF
 如果要换 placement，只改：
 
 ```text
-/cfg/setPlacementFile ../Input/placements/<ratio>/<placement>.csv
+/cfg/setPlacementFile ../Input/output_pbc/<ratio>/<placement>.csv
 ```
 
 如果要换 ratio，也同步改：
@@ -182,7 +178,7 @@ python3 stageD_run_batch.py --ratio-tag 1-2
 
 默认行为：
 
-- 从 `Input/placements/1-2/` 读取全部 placement
+- 从 `Input/output_pbc/1-2/` 读取全部主 placement，并排除辅助 CSV
 - 只生成宏
 - 不实际执行
 

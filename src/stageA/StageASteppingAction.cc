@@ -2,6 +2,7 @@
 
 #include "StageARunAction.hh"
 #include "AnalysisConfig.hh"
+#include "DetectorConstruction.hh"
 
 #include "G4Step.hh"
 #include "G4Track.hh"
@@ -15,10 +16,11 @@
 #include "G4VPhysicalVolume.hh"
 #include "G4LogicalVolume.hh"
 #include "G4TrackStatus.hh"
+#include "G4RunManager.hh"
 
 namespace
 {
-    G4String PhaseLabel(const G4VPhysicalVolume *pv)
+    G4String PhaseLabel(const G4VPhysicalVolume *pv, const DetectorConstruction *detector)
     {
         if (!pv)
             return "outside";
@@ -27,24 +29,18 @@ namespace
         if (!lv)
             return "outside";
 
-        const auto &name = lv->GetName();
-
-        if (name == "BN_LV")
+        const auto phase = detector != nullptr
+                               ? detector->GetPhaseFromLogicalVolume(lv)
+                               : DetectorConstruction::Phase::Unknown;
+        if (phase == DetectorConstruction::Phase::BN)
             return "BN";
-        if (name == "ZnS_LV")
+        if (phase == DetectorConstruction::Phase::ZnS)
             return "ZnS";
-        if (name == "MatrixLV")
+        if (phase == DetectorConstruction::Phase::Matrix)
             return "binder_void";
-        if (name == "WorldLV")
+        if (phase == DetectorConstruction::Phase::World)
             return "outside";
-
-        // 把 clipped BN / ZnS 也归进主相，避免名字不完全相等时看不出来
-        if (name.find("BN") != std::string::npos)
-            return "BN_like";
-        if (name.find("ZnS") != std::string::npos)
-            return "ZnS_like";
-
-        return name;
+        return "other";
     }
 
     const char *TrackStatusLabel(G4TrackStatus st)
@@ -147,8 +143,10 @@ void StageASteppingAction::UserSteppingAction(const G4Step *step)
 
     const G4VProcess *proc = postPoint->GetProcessDefinedStep();
     const G4String procName = (proc != nullptr) ? proc->GetProcessName() : "none";
-    const G4String prePhase = PhaseLabel(prePoint->GetPhysicalVolume());
-    const G4String postPhase = PhaseLabel(postPoint->GetPhysicalVolume());
+    const auto *detector = dynamic_cast<const DetectorConstruction *>(
+        G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+    const G4String prePhase = PhaseLabel(prePoint->GetPhysicalVolume(), detector);
+    const G4String postPhase = PhaseLabel(postPoint->GetPhysicalVolume(), detector);
 
     // ---- count neutron absorption-like termination in BN ----
     // 对 BN 中的 10B(n,alpha)7Li，HP 下可能表现为 nCaptureHP，
@@ -157,7 +155,7 @@ void StageASteppingAction::UserSteppingAction(const G4Step *step)
     const G4bool isCaptureLike =
         (procName == "nCapture" || procName == "nCaptureHP") ||
         ((procName == "neutronInelastic" || procName == "hadInelastic") &&
-         (prePhase == "BN" || prePhase == "BN_like"));
+         prePhase == "BN");
 
     if (isCaptureLike)
     {
@@ -236,10 +234,11 @@ G4bool StageASteppingAction::IsPrimaryNeutronStep(const G4Step *step) const
 
 G4bool StageASteppingAction::IsPointInsidePatch(const G4ThreeVector &p) const
 {
-    const G4double halfXY = 0.5 * fConfig->patchXY_um * um;
-    const G4double halfZ = 0.5 * fConfig->microThickness_um * um;
-
-    return (p.x() >= -halfXY && p.x() <= halfXY &&
-            p.y() >= -halfXY && p.y() <= halfXY &&
-            p.z() >= -halfZ && p.z() <= halfZ);
+    const auto *detector = dynamic_cast<const DetectorConstruction *>(
+        G4RunManager::GetRunManager()->GetUserDetectorConstruction());
+    if (detector == nullptr)
+        return false;
+    return (p.x() >= -detector->GetBoxHalfX() && p.x() <= detector->GetBoxHalfX() &&
+            p.y() >= -detector->GetBoxHalfY() && p.y() <= detector->GetBoxHalfY() &&
+            p.z() >= -detector->GetBoxHalfZ() && p.z() <= detector->GetBoxHalfZ());
 }

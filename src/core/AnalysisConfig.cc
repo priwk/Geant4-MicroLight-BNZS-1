@@ -5,9 +5,6 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
-#include <unordered_map>
 #include <vector>
 
 namespace
@@ -106,70 +103,6 @@ namespace
     return bnWt > 0.0 && znsWt > 0.0;
   }
 
-  std::vector<std::string> SplitCsvLine(const std::string &line)
-  {
-    std::vector<std::string> fields;
-    std::stringstream ss(line);
-    std::string field;
-    while (std::getline(ss, field, ','))
-    {
-      fields.push_back(field);
-    }
-    return fields;
-  }
-
-  bool ReadFirstStageCSourceMetadata(const std::string &path,
-                                     double &bnWt,
-                                     double &znsWt,
-                                     std::string &placementFile)
-  {
-    std::ifstream fin(path.c_str());
-    if (!fin)
-      return false;
-
-    std::string headerLine;
-    if (!std::getline(fin, headerLine))
-      return false;
-
-    const auto headers = SplitCsvLine(headerLine);
-    std::unordered_map<std::string, std::size_t> index;
-    for (std::size_t i = 0; i < headers.size(); ++i)
-    {
-      index[headers[i]] = i;
-    }
-
-    const auto bnIt = index.find("bn_wt");
-    const auto znsIt = index.find("zns_wt");
-    const auto placementIt = index.find("placement_file");
-    if (bnIt == index.end() || znsIt == index.end() || placementIt == index.end())
-      return false;
-
-    std::string line;
-    while (std::getline(fin, line))
-    {
-      if (line.empty())
-        continue;
-
-      const auto fields = SplitCsvLine(line);
-      if (fields.size() <= std::max({bnIt->second, znsIt->second, placementIt->second}))
-        continue;
-
-      try
-      {
-        bnWt = std::stod(fields[bnIt->second]);
-        znsWt = std::stod(fields[znsIt->second]);
-      }
-      catch (...)
-      {
-        return false;
-      }
-
-      placementFile = fields[placementIt->second];
-      return bnWt > 0.0 && znsWt > 0.0 && !placementFile.empty();
-    }
-
-    return false;
-  }
 }
 
 std::filesystem::path AnalysisConfig::ProjectRootPath()
@@ -228,31 +161,29 @@ AnalysisConfig::AnalysisConfig()
       znsWt(2.0),
       useRandomPlacement(true),
       placementFilePath(""),
+      placementGeometryMode("pbc_clipped"),
+      periodicImagesFilePath(""),
       captureCsvPath(""),
       captureInputDir(""),
-      opticalSourcePath(""),
-      sourceSampling("uniformAlongStep"),
-      opticalSamplesPerStep(1),
-      writeStageCPhotonCsv(false),
       opticalParamsProvided(false),
-      opticalMatrixRIndex(0.0),
-      opticalMatrixAbsLengthUm(1.0e6),
-      opticalBnRIndex(1.98),
-      opticalBnAbsLengthUm(2.0e4),
-      opticalZnsRIndex(2.45),
-      opticalZnsAbsLengthUm(2.0e3),
+      opticalMatrixRIndex(1.0),
+      opticalMatrixAbsLengthUm(1.0e5),
+      opticalBnRIndex(1.92),
+      opticalBnAbsLengthUm(3.2e3),
+      opticalZnsRIndex(2.47),
+      opticalZnsAbsLengthUm(4.1e4),
       stageD_wavelength_nm(450.0),
       stageD_source_mode("uniform_all_phase"),
-      stageD_boundary_mode("same_phase_reentry"),
+      stageD_boundary_mode("periodic_wrap"),
       stageD_reentry_mode("state_matched"),
       stageD_particle_reentry_mode("sphere_q_mu"),
       stageD_matrix_reentry_mode("clearance_binned_portal"),
       stageD_scatter_metric("particle_encounter_angle_threshold"),
       stageD_target_primary_scatter(0),
-      stageD_theta_threshold_deg(0.1),
-      stageD_max_reentry(10000),
+      stageD_theta_threshold_deg(0),
+      stageD_max_reentry(50000),
       stageD_max_steps(100000),
-      stageD_max_path_length_um(5000.0),
+      stageD_max_path_length_um(10000.0),
       stageD_output_dir(""),
       stageD_portal_nu(128),
       stageD_portal_nv(128),
@@ -276,14 +207,6 @@ AnalysisConfig::AnalysisConfig()
     {
       runMode = RunMode::StageB_ReplayAlphaLi;
     }
-    else if (mode == "stagec" || mode == "c" || mode == "stagec_opticalstub")
-    {
-      runMode = RunMode::StageC_OpticalStub;
-    }
-    else if (mode == "stagec_opticalrve" || mode == "opticalrve")
-    {
-      runMode = RunMode::StageC_OpticalRVE;
-    }
     else if (mode == "staged_opticalhomogenization" || mode == "staged" || mode == "d")
     {
       runMode = RunMode::StageD_OpticalHomogenization;
@@ -302,6 +225,14 @@ AnalysisConfig::AnalysisConfig()
   {
     useRandomPlacement = IsTruthyEnv(randomPlacementEnv);
   }
+
+  const char *geometryModeEnv = std::getenv("BNZS_PLACEMENT_GEOMETRY_MODE");
+  if (geometryModeEnv != nullptr && std::string(geometryModeEnv).size() > 0)
+    placementGeometryMode = geometryModeEnv;
+
+  const char *periodicImagesEnv = std::getenv("BNZS_PBC_IMAGES_CSV");
+  if (periodicImagesEnv != nullptr && std::string(periodicImagesEnv).size() > 0)
+    periodicImagesFilePath = periodicImagesEnv;
 
   const char *captureCsvEnv = std::getenv("BNZS_INPUT_CSV");
   if (captureCsvEnv != nullptr && std::string(captureCsvEnv).size() > 0)
@@ -331,58 +262,6 @@ AnalysisConfig::AnalysisConfig()
       bnWt = dirBnWt;
       znsWt = dirZnsWt;
     }
-  }
-
-  const char *opticalSourceEnv = std::getenv("BNZS_OPTICAL_SOURCE_CSV");
-  if (opticalSourceEnv == nullptr || std::string(opticalSourceEnv).empty())
-  {
-    opticalSourceEnv = std::getenv("BNZS_STAGEC_SOURCE_CSV");
-  }
-  if (opticalSourceEnv != nullptr && std::string(opticalSourceEnv).size() > 0)
-  {
-    opticalSourcePath = opticalSourceEnv;
-
-    double sourceBnWt = 0.0;
-    double sourceZnsWt = 0.0;
-    std::string sourcePlacementFile;
-    if (ReadFirstStageCSourceMetadata(opticalSourcePath,
-                                      sourceBnWt,
-                                      sourceZnsWt,
-                                      sourcePlacementFile))
-    {
-      bnWt = sourceBnWt;
-      znsWt = sourceZnsWt;
-      placementFilePath = sourcePlacementFile;
-      useRandomPlacement = false;
-    }
-  }
-
-  const char *sourceSamplingEnv = std::getenv("BNZS_SOURCE_SAMPLING");
-  if (sourceSamplingEnv != nullptr && std::string(sourceSamplingEnv).size() > 0)
-  {
-    sourceSampling = sourceSamplingEnv;
-  }
-
-  const char *samplesEnv = std::getenv("BNZS_SAMPLE_PHOTONS_PER_STEP");
-  if (samplesEnv != nullptr && std::string(samplesEnv).size() > 0)
-  {
-    try
-    {
-      const int samples = std::stoi(samplesEnv);
-      if (samples > 0)
-      {
-        opticalSamplesPerStep = samples;
-      }
-    }
-    catch (...)
-    {
-    }
-  }
-
-  const char *writePhotonCsvEnv = std::getenv("BNZS_WRITE_STAGEC_PHOTON_CSV");
-  if (writePhotonCsvEnv != nullptr)
-  {
-    writeStageCPhotonCsv = IsTruthyEnv(writePhotonCsvEnv);
   }
 
   auto readOpticalDoubleEnv = [&](const char *name, double &target)
@@ -502,10 +381,6 @@ const char *AnalysisConfig::RunModeName(RunMode mode)
     return "StageA_NeutronPatch";
   case RunMode::StageB_ReplayAlphaLi:
     return "StageB_ReplayAlphaLi";
-  case RunMode::StageC_OpticalStub:
-    return "StageC_OpticalStub";
-  case RunMode::StageC_OpticalRVE:
-    return "StageC_OpticalRVE";
   case RunMode::StageD_OpticalHomogenization:
     return "StageD_OpticalHomogenization";
   default:

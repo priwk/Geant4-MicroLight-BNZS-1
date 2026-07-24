@@ -95,6 +95,29 @@ def stable_seed(base_seed, *parts):
     return int.from_bytes(h.digest()[:8], "big")
 
 
+def resolve_placement_root(project_root):
+    pbc_root = project_root / "Input" / "output_pbc"
+    if pbc_root.is_dir():
+        return pbc_root
+    return project_root / "Input" / "placements"
+
+
+def is_main_placement_csv(path):
+    name = Path(path).name
+    return (
+        Path(path).suffix.lower() == ".csv"
+        and not name.endswith("_pbc_images.csv")
+        and not name.endswith("_radius_stats.csv")
+    )
+
+
+def discover_placements(ratio_placement_dir):
+    return sorted(
+        path for path in ratio_placement_dir.rglob("*.csv")
+        if is_main_placement_csv(path)
+    )
+
+
 def ensure_record_index_header(header):
     if "record_index" in header:
         return header, header.index("record_index")
@@ -716,7 +739,7 @@ def run_grouped_by_chunk(
                 if not chunk_rows:
                     continue
 
-                placement_tag = placement_tag_for_ratio(placement_file, project_root / "Input" / "placements" / ratio)
+                placement_tag = placement_tag_for_ratio(placement_file, resolve_placement_root(project_root) / ratio)
                 chunk_name = (
                     f"{source_tag}_m{replay_idx + 1:02d}_"
                     f"p{placement_idx + 1:04d}_{placement_tag}_"
@@ -789,7 +812,7 @@ def run_grouped_by_placement(
     failed_runs = 0
     source_tags = [assignment["source_tag"] for assignment in assignments]
     placement_index_lookup = {path.resolve(): idx for idx, path in enumerate(placement_files)}
-    ratio_placement_dir = project_root / "Input" / "placements" / ratio
+    ratio_placement_dir = resolve_placement_root(project_root) / ratio
 
     for assignment in assignments:
         if not assignment["rows"]:
@@ -895,7 +918,7 @@ def main():
     macro = Path(args.macro).resolve() if args.macro else project_root / "run.mac"
 
     input_root, stagea_layout = resolve_capture_input_root(project_root)
-    placement_root = project_root / "Input" / "placements"
+    placement_root = resolve_placement_root(project_root)
     chunk_root = build_dir / "stageB_balanced_chunks"
     log_root = project_root / "logs" / "stageB" / "balanced"
 
@@ -942,7 +965,7 @@ def main():
             ),
             key=lambda p: (natural_float_tag(p), p.name),
         )
-        placement_files = sorted(ratio_placement_dir.rglob("*.csv"))
+        placement_files = discover_placements(ratio_placement_dir)
 
         if not capture_files:
             print(f">>> Skip {ratio}: no capture CSV files in {ratio_input_dir}")

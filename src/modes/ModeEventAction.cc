@@ -144,15 +144,6 @@ void ModeEventAction::BeginOfEventAction(const G4Event *event)
     fStageBEventAction->BeginOfEventAction(event);
     return;
 
-  case RunMode::StageC_OpticalStub:
-    G4Exception("ModeEventAction::BeginOfEventAction",
-                "BNZS_MODE_EVT_006", FatalException,
-                "RunMode StageC_OpticalStub is selected, but Stage C event action is not implemented yet.");
-    return;
-
-  case RunMode::StageC_OpticalRVE:
-    return;
-
   case RunMode::StageD_OpticalHomogenization:
     if (EnsureStageDEventAction() == nullptr)
     {
@@ -197,15 +188,6 @@ void ModeEventAction::EndOfEventAction(const G4Event *event)
       return;
     }
     fStageBEventAction->EndOfEventAction(event);
-    return;
-
-  case RunMode::StageC_OpticalStub:
-    G4Exception("ModeEventAction::EndOfEventAction",
-                "BNZS_MODE_EVT_010", FatalException,
-                "RunMode StageC_OpticalStub is selected, but Stage C event action is not implemented yet.");
-    return;
-
-  case RunMode::StageC_OpticalRVE:
     return;
 
   case RunMode::StageD_OpticalHomogenization:
