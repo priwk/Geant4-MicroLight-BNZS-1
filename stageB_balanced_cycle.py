@@ -150,7 +150,13 @@ def read_capture_rows(csv_path, min_thickness_um):
         header = next(reader, None)
         if header is None:
             return [], []
-        header, record_index_col = ensure_record_index_header(list(header))
+        header = [name.strip().lstrip("\ufeff") for name in header]
+        if "thickness_um" not in header:
+            raise SystemExit(
+                f"Missing required column 'thickness_um' in capture CSV: {csv_path}"
+            )
+        thickness_col = header.index("thickness_um")
+        header, record_index_col = ensure_record_index_header(header)
         header, input_uid_col = ensure_header_column(header, "input_file_uid")
         header, placement_replay_col = ensure_header_column(
             header, "placement_replay_index"
@@ -161,7 +167,7 @@ def read_capture_rows(csv_path, min_thickness_um):
             if not row:
                 continue
             try:
-                thickness = float(row[1])
+                thickness = float(row[thickness_col])
             except (ValueError, IndexError):
                 continue
             if thickness + 1.0e-12 < min_thickness_um:
