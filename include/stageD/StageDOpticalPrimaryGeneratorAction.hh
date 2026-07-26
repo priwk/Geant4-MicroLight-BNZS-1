@@ -5,6 +5,9 @@
 #include "G4ParticleGun.hh"
 #include "StageDOpticalStats.hh"
 
+#include <cstdint>
+#include <vector>
+
 class G4Event;
 class AnalysisConfig;
 class DetectorConstruction;
@@ -21,6 +24,7 @@ public:
 
 private:
   const DetectorConstruction *ResolveDetector() const;
+  void PrepareZnSSphereCdf(const DetectorConstruction *detector) const;
   G4ThreeVector SampleUniformPointInZnSSphere() const;
   G4ThreeVector SampleUniformPointInWholeRve(std::string &phaseName) const;
   G4ThreeVector RandomUnitVector() const;
@@ -30,6 +34,11 @@ private:
   AnalysisConfig *fConfig;
   G4ParticleGun *fParticleGun;
   StageDPhotonLaunchRecord fCurrentPhoton;
+  mutable const DetectorConstruction *fZnSCdfDetector;
+  mutable std::uint64_t fZnSCdfPlacementSeed;
+  mutable std::size_t fZnSCdfSphereCount;
+  mutable std::vector<G4double> fZnSSphereCdf;
+  mutable G4double fZnSSphereTotalWeight;
 };
 
 #endif

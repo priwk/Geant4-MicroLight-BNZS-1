@@ -118,13 +118,13 @@ def parse_args():
     )
     parser.add_argument(
         "--scatter-metric",
-        default="angle_threshold",
+        default="particle_encounter_no_threshold",
         choices=[
             "angle_threshold",
             "particle_encounter_angle_threshold",
             "particle_encounter_no_threshold",
         ],
-        help="StageD primary scatter metric. Use angle_threshold with theta-threshold-deg for physical primary mu_s/g/mu_s_prime.",
+        help="StageD primary scatter metric. Formal homogenization uses particle_encounter_no_threshold; angle_threshold is diagnostic.",
     )
     parser.add_argument(
         "--target-primary-scatter",
@@ -135,8 +135,8 @@ def parse_args():
     parser.add_argument(
         "--theta-threshold-deg",
         type=float,
-        default=0.1,
-        help="StageD effective scatter angle threshold.",
+        default=0.0,
+        help="Diagnostic effective-scatter angle threshold; raw outputs are always unthresholded.",
     )
     parser.add_argument(
         "--max-reentry",
@@ -155,6 +155,23 @@ def parse_args():
         type=float,
         default=5000.0,
         help="StageD maximum physical path length per photon in um.",
+    )
+    parser.add_argument(
+        "--write-event-csv",
+        action="store_true",
+        help="Write sampled per-photon Stage D event rows. Disabled by default.",
+    )
+    parser.add_argument(
+        "--event-sampling-rate",
+        type=float,
+        default=1.0,
+        help="Deterministic event CSV sampling rate in [0,1].",
+    )
+    parser.add_argument(
+        "--max-event-rows",
+        type=int,
+        default=100000,
+        help="Maximum event CSV rows when --write-event-csv is enabled.",
     )
     parser.add_argument(
         "--macro-dir",
@@ -269,6 +286,9 @@ def macro_text(
     max_reentry: int,
     max_steps: int,
     max_path_length_um: float,
+    write_event_csv: bool,
+    event_sampling_rate: float,
+    max_event_rows: int,
     random_seed: int,
 ):
     return "\n".join(
@@ -294,6 +314,9 @@ def macro_text(
             f"/cfg/stageD/setMaxReentry {max_reentry}",
             f"/cfg/stageD/setMaxSteps {max_steps}",
             f"/cfg/stageD/setMaxPathLengthUm {max_path_length_um}",
+            f"/cfg/stageD/setWriteEventCsv {'true' if write_event_csv else 'false'}",
+            f"/cfg/stageD/setEventSamplingRate {event_sampling_rate}",
+            f"/cfg/stageD/setMaxEventRows {max_event_rows}",
             "",
             "/run/initialize",
             f"/run/beamOn {beam_on}",
@@ -318,6 +341,10 @@ def main():
         raise SystemExit("--target-primary-scatter must be >= 0")
     if args.max_reentry <= 0 or args.max_steps <= 0 or args.max_path_length_um <= 0.0:
         raise SystemExit("--max-reentry, --max-steps, and --max-path-length-um must be > 0")
+    if not 0.0 <= args.event_sampling_rate <= 1.0:
+        raise SystemExit("--event-sampling-rate must be in [0,1]")
+    if args.max_event_rows < 0:
+        raise SystemExit("--max-event-rows must be >= 0")
 
     wavelength_tag = (
         f"lambda_{int(round(args.wavelength_nm))}nm"
@@ -413,6 +440,9 @@ def main():
                 max_reentry=args.max_reentry,
                 max_steps=args.max_steps,
                 max_path_length_um=args.max_path_length_um,
+                write_event_csv=args.write_event_csv,
+                event_sampling_rate=args.event_sampling_rate,
+                max_event_rows=args.max_event_rows,
                 random_seed=args.seed + args.start_index + idx,
             ),
             encoding="utf-8",

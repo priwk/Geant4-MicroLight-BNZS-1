@@ -11,12 +11,15 @@
 /cfg/stageD/setReentryMode state_matched
 /cfg/stageD/setParticleReentryMode sphere_q_mu
 /cfg/stageD/setMatrixReentryMode clearance_binned_portal
-/cfg/stageD/setScatterMetric angle_threshold
+/cfg/stageD/setScatterMetric particle_encounter_no_threshold
 /cfg/stageD/setTargetPrimaryScatter 0
-/cfg/stageD/setThetaThresholdDeg 0.1
+/cfg/stageD/setThetaThresholdDeg 0
 /cfg/stageD/setMaxReentry 10000
 /cfg/stageD/setMaxSteps 100000
 /cfg/stageD/setMaxPathLengthUm 5000
+/cfg/stageD/setWriteEventCsv false
+/cfg/stageD/setEventSamplingRate 1
+/cfg/stageD/setMaxEventRows 100000
 /cfg/stageD/setPortalNu 128
 /cfg/stageD/setPortalNv 128
 /cfg/stageD/setClearanceBinEdgesUm 0.02 0.10 0.50

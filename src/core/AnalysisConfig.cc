@@ -172,7 +172,7 @@ AnalysisConfig::AnalysisConfig()
       stageD_reentry_mode("state_matched"),
       stageD_particle_reentry_mode("sphere_q_mu"),
       stageD_matrix_reentry_mode("clearance_binned_portal"),
-      stageD_scatter_metric("particle_encounter_angle_threshold"),
+      stageD_scatter_metric("particle_encounter_no_threshold"),
       stageD_target_primary_scatter(0),
       stageD_theta_threshold_deg(0),
       stageD_max_reentry(50000),
@@ -190,6 +190,9 @@ AnalysisConfig::AnalysisConfig()
       stageD_write_reentry_diagnostics(false),
       stageD_reentry_diagnostics_sampling_rate(1.0),
       stageD_max_diagnostic_rows(100000),
+      stageD_write_event_csv(false),
+      stageD_event_sampling_rate(0.0),
+      stageD_max_event_rows(0),
       allowThicknessEqualLocalPatch(true)
 {
   const char *runModeEnv = std::getenv("BNZS_RUN_MODE");
@@ -261,6 +264,7 @@ AnalysisConfig::AnalysisConfig()
     }
   }
 
+  int opticalEnvValueCount = 0;
   auto readOpticalDoubleEnv = [&](const char *name, double &target)
   {
     const char *value = std::getenv(name);
@@ -272,7 +276,7 @@ AnalysisConfig::AnalysisConfig()
       if (parsed > 0.0)
       {
         target = parsed;
-        opticalParamsProvided = true;
+        ++opticalEnvValueCount;
       }
     }
     catch (...)
@@ -286,10 +290,43 @@ AnalysisConfig::AnalysisConfig()
   readOpticalDoubleEnv("BNZS_OPTICAL_BN_ABSLENGTH_UM", opticalBnAbsLengthUm);
   readOpticalDoubleEnv("BNZS_OPTICAL_ZNS_RINDEX", opticalZnsRIndex);
   readOpticalDoubleEnv("BNZS_OPTICAL_ZNS_ABSLENGTH_UM", opticalZnsAbsLengthUm);
+  opticalParamsProvided = opticalEnvValueCount == 6;
 
-  readOpticalDoubleEnv("BNZS_STAGED_WAVELENGTH_NM", stageD_wavelength_nm);
-  readOpticalDoubleEnv("BNZS_STAGED_THETA_THRESHOLD_DEG", stageD_theta_threshold_deg);
-  readOpticalDoubleEnv("BNZS_STAGED_MAX_PATH_LENGTH_UM", stageD_max_path_length_um);
+  auto readPositiveDoubleEnv = [](const char *name, double &target)
+  {
+    const char *value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty())
+      return;
+    try
+    {
+      const double parsed = std::stod(value);
+      if (parsed > 0.0)
+        target = parsed;
+    }
+    catch (...)
+    {
+    }
+  };
+
+  auto readNonNegativeDoubleEnv = [](const char *name, double &target)
+  {
+    const char *value = std::getenv(name);
+    if (value == nullptr || std::string(value).empty())
+      return;
+    try
+    {
+      const double parsed = std::stod(value);
+      if (parsed >= 0.0)
+        target = parsed;
+    }
+    catch (...)
+    {
+    }
+  };
+
+  readPositiveDoubleEnv("BNZS_STAGED_WAVELENGTH_NM", stageD_wavelength_nm);
+  readNonNegativeDoubleEnv("BNZS_STAGED_THETA_THRESHOLD_DEG", stageD_theta_threshold_deg);
+  readPositiveDoubleEnv("BNZS_STAGED_MAX_PATH_LENGTH_UM", stageD_max_path_length_um);
 
   auto readPositiveIntEnv = [](const char *name, int &target)
   {
@@ -350,6 +387,39 @@ AnalysisConfig::AnalysisConfig()
     }
   }
 
+  const char *writeEventCsvEnv = std::getenv("BNZS_STAGED_WRITE_EVENT_CSV");
+  if (writeEventCsvEnv != nullptr)
+    stageD_write_event_csv = IsTruthyEnv(writeEventCsvEnv);
+
+  const char *eventSamplingRateEnv =
+      std::getenv("BNZS_STAGED_EVENT_SAMPLING_RATE");
+  if (eventSamplingRateEnv != nullptr)
+  {
+    try
+    {
+      const double value = std::stod(eventSamplingRateEnv);
+      if (value >= 0.0 && value <= 1.0)
+        stageD_event_sampling_rate = value;
+    }
+    catch (...)
+    {
+    }
+  }
+
+  const char *maxEventRowsEnv = std::getenv("BNZS_STAGED_MAX_EVENT_ROWS");
+  if (maxEventRowsEnv != nullptr)
+  {
+    try
+    {
+      const int value = std::stoi(maxEventRowsEnv);
+      if (value >= 0)
+        stageD_max_event_rows = value;
+    }
+    catch (...)
+    {
+    }
+  }
+
   const char *stageDSourceModeEnv = std::getenv("BNZS_STAGED_SOURCE_MODE");
   if (stageDSourceModeEnv != nullptr && std::string(stageDSourceModeEnv).size() > 0)
     stageD_source_mode = stageDSourceModeEnv;
@@ -382,10 +452,10 @@ AnalysisConfig::AnalysisConfig()
   if (stageDOutputDirEnv != nullptr && std::string(stageDOutputDirEnv).size() > 0)
     stageD_output_dir = stageDOutputDirEnv;
 
-  readOpticalDoubleEnv("BNZS_STAGED_PORTAL_MARGIN_UM", stageD_portal_margin_um);
-  readOpticalDoubleEnv("BNZS_STAGED_CLEARANCE_BIN0_UM", stageD_clearance_bin0_um);
-  readOpticalDoubleEnv("BNZS_STAGED_CLEARANCE_BIN1_UM", stageD_clearance_bin1_um);
-  readOpticalDoubleEnv("BNZS_STAGED_CLEARANCE_BIN2_UM", stageD_clearance_bin2_um);
+  readNonNegativeDoubleEnv("BNZS_STAGED_PORTAL_MARGIN_UM", stageD_portal_margin_um);
+  readPositiveDoubleEnv("BNZS_STAGED_CLEARANCE_BIN0_UM", stageD_clearance_bin0_um);
+  readPositiveDoubleEnv("BNZS_STAGED_CLEARANCE_BIN1_UM", stageD_clearance_bin1_um);
+  readPositiveDoubleEnv("BNZS_STAGED_CLEARANCE_BIN2_UM", stageD_clearance_bin2_um);
 
   const char *bnWtEnv = std::getenv("BNZS_BN_WT");
   const char *znsWtEnv = std::getenv("BNZS_ZNS_WT");

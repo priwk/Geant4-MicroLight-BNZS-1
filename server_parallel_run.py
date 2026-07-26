@@ -96,7 +96,7 @@ def parse_args():
     )
     stage_d.add_argument(
         "--scatter-metric",
-        default="angle_threshold",
+        default="particle_encounter_no_threshold",
         choices=[
             "angle_threshold",
             "particle_encounter_angle_threshold",
@@ -104,10 +104,13 @@ def parse_args():
         ],
     )
     stage_d.add_argument("--target-primary-scatter", type=int, default=0)
-    stage_d.add_argument("--theta-threshold-deg", type=float, default=0.5)
+    stage_d.add_argument("--theta-threshold-deg", type=float, default=0.0)
     stage_d.add_argument("--max-reentry", type=int, default=10000)
     stage_d.add_argument("--max-steps", type=int, default=100000)
     stage_d.add_argument("--max-path-length-um", type=float, default=5000.0)
+    stage_d.add_argument("--write-event-csv", action="store_true")
+    stage_d.add_argument("--event-sampling-rate", type=float, default=1.0)
+    stage_d.add_argument("--max-event-rows", type=int, default=100000)
     stage_d.add_argument("--macro-dir", default=None)
     stage_d.add_argument("--log-dir", default=None)
     stage_d.add_argument("--executable-name", default="Geant4-MicroLight-BNZS")
@@ -216,6 +219,10 @@ def validate_stage_d_args(args):
         raise SystemExit("--target-primary-scatter must be >= 0")
     if args.max_reentry <= 0 or args.max_steps <= 0 or args.max_path_length_um <= 0.0:
         raise SystemExit("--max-reentry, --max-steps, and --max-path-length-um must be > 0")
+    if not 0.0 <= args.event_sampling_rate <= 1.0:
+        raise SystemExit("--event-sampling-rate must be in [0,1]")
+    if args.max_event_rows < 0:
+        raise SystemExit("--max-event-rows must be >= 0")
 
 
 def resolve_stage_d_paths(args):
@@ -295,6 +302,9 @@ def build_stage_d_tasks(args, project_root, build_dir, placement_dir, macro_dir,
                 max_reentry=args.max_reentry,
                 max_steps=args.max_steps,
                 max_path_length_um=args.max_path_length_um,
+                write_event_csv=args.write_event_csv,
+                event_sampling_rate=args.event_sampling_rate,
+                max_event_rows=args.max_event_rows,
                 random_seed=args.seed + args.start_index + idx,
             ),
             encoding="utf-8",
@@ -389,6 +399,24 @@ def run_stage_d(args):
                 args.ratio_tag,
                 "--project-root",
                 str(project_root),
+                "--scatter-metric",
+                args.scatter_metric,
+                "--target-primary-scatter",
+                str(args.target_primary_scatter),
+                "--source-mode",
+                args.source_mode,
+                "--boundary-mode",
+                args.boundary_mode,
+                "--reentry-mode",
+                args.reentry_mode,
+                "--particle-reentry-mode",
+                args.particle_reentry_mode,
+                "--matrix-reentry-mode",
+                args.matrix_reentry_mode,
+                "--theta-threshold-deg",
+                str(args.theta_threshold_deg),
+                "--wavelength-nm",
+                str(args.wavelength_nm),
             ],
             check=True,
         )

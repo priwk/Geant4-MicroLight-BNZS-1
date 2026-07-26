@@ -54,6 +54,9 @@ private:
   G4UIcmdWithABool *fStageDWriteReentryDiagnosticsCmd;
   G4UIcmdWithADouble *fStageDReentryDiagnosticsSamplingRateCmd;
   G4UIcmdWithAnInteger *fStageDMaxDiagnosticRowsCmd;
+  G4UIcmdWithABool *fStageDWriteEventCsvCmd;
+  G4UIcmdWithADouble *fStageDEventSamplingRateCmd;
+  G4UIcmdWithAnInteger *fStageDMaxEventRowsCmd;
   G4UIcommand *fOpticalParamsCmd;
   G4UIcommand *fWeightRatioCmd;
 };

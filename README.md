@@ -127,6 +127,17 @@ Stage D 默认使用 `periodic_wrap`：光子越过人工 RVE 面后，在对面
 `BNZS_STAGED_REENTRY_DIAGNOSTICS_SAMPLING_RATE` 和
 `BNZS_STAGED_MAX_DIAGNOSTIC_ROWS`。
 
+逐光子 `stageD_events.csv` 在生产运行中默认关闭，summary 与相函数不受影响。
+调试时可开启确定性抽样并限制行数：
+
+```text
+/cfg/stageD/setWriteEventCsv true
+/cfg/stageD/setEventSamplingRate 0.01
+/cfg/stageD/setMaxEventRows 100000
+```
+
+批处理命令对应 `--write-event-csv --event-sampling-rate 0.01 --max-event-rows 100000`。
+
 ```text
 Output/stageD_optical_homogenization/<ratio>/<placement_id>/lambda_<wavelength>nm/
   <source>__<boundary>__<config_hash>/run_<run_id>_seeds_<seed0>_<seed1>/
@@ -134,6 +145,12 @@ Output/stageD_optical_homogenization/<ratio>/<placement_id>/lambda_<wavelength>n
 
 `server_parallel_run.py staged` 和 `stageD_run_batch.py` 会为每个 placement 写入不同的
 Geant4 随机种子，避免重复批次误覆盖。Stage D CSV 使用 15 位有效数字。
+正式均匀化默认使用 `uniform_all_phase + periodic_wrap + particle_encounter_no_threshold`。
+单 run 同时输出 raw 与 thresholded 相函数；多 placement 后处理使用 ratio-of-sums，
+并分别导出原生 RVE 参数和 `mu_s = mu_s_prime_raw, g = 0` 的各向同性等效参数。
+`stageD_g0_equivalent_*` 保持 full-path 兼容语义，同时新增
+`stageD_g0_full_path_*` 与 `stageD_g0_post_first_*`。后者描述完成一次完整颗粒
+encounter 后的 moving-photon 子群，不能替代 ZnS 初始困光/提取模型。
 
 后处理：
 

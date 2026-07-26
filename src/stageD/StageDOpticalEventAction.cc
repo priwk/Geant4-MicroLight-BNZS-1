@@ -98,11 +98,7 @@ void StageDOpticalEventAction::EndOfEventAction(const G4Event *event)
        fCurrentEvent.source_inside_particle_pending_exit) &&
       !fCurrentEvent.absorbed)
   {
-    ++fCurrentEvent.num_censored_particle_encounter;
-    fCurrentEvent.encounter_active = false;
-    fCurrentEvent.encounter_has_matrix_entry = false;
-    fCurrentEvent.source_inside_particle_pending_exit = false;
-    fCurrentEvent.encounter_particle_phase.clear();
+    MarkCensoredEncounterIfActive("event_end");
   }
 
   if (fCurrentEvent.num_real_scatter > 0)
@@ -218,18 +214,25 @@ void StageDOpticalEventAction::SetFinalStatus(
     const std::string &status,
     G4bool absorbed)
 {
-  if ((status == "max_reentry" ||
-       status == "max_steps" ||
-       status == "max_path_length" ||
-       status == "reentry_failed") &&
-      (fCurrentEvent.encounter_active ||
-       fCurrentEvent.source_inside_particle_pending_exit))
+  if (fCurrentEvent.encounter_active ||
+      fCurrentEvent.source_inside_particle_pending_exit)
   {
-    ++fCurrentEvent.num_censored_particle_encounter;
-    fCurrentEvent.encounter_active = false;
-    fCurrentEvent.encounter_has_matrix_entry = false;
-    fCurrentEvent.source_inside_particle_pending_exit = false;
-    fCurrentEvent.encounter_particle_phase.clear();
+    if (status == "max_steps")
+      MarkCensoredEncounterIfActive("max_steps");
+    else if (status == "max_path_length")
+      MarkCensoredEncounterIfActive("max_path");
+    else if (status == "max_reentry")
+      MarkCensoredEncounterIfActive("max_reentry");
+    else if (status == "reentry_failed" ||
+             status == "periodic_phase_mismatch" ||
+             status == "periodic_geometry_required")
+      MarkCensoredEncounterIfActive("reentry_failure");
+    else if (status == "detected")
+      MarkCensoredEncounterIfActive("detection");
+    else if (status == "target_primary_scatter")
+      MarkCensoredEncounterIfActive("target_scatter");
+    else if (status == "escaped_debug")
+      MarkCensoredEncounterIfActive("escape");
   }
 
   fCurrentEvent.final_status = status;
@@ -251,7 +254,8 @@ void StageDOpticalEventAction::MarkAbsorbed(const std::string &phaseLabel)
   SetFinalStatus("absorbed", true);
 }
 
-void StageDOpticalEventAction::MarkCensoredEncounterIfActive()
+void StageDOpticalEventAction::MarkCensoredEncounterIfActive(
+    const std::string &reason)
 {
   if (!fCurrentEvent.encounter_active &&
       !fCurrentEvent.source_inside_particle_pending_exit)
@@ -260,6 +264,26 @@ void StageDOpticalEventAction::MarkCensoredEncounterIfActive()
   }
 
   ++fCurrentEvent.num_censored_particle_encounter;
+  if (reason == "absorption")
+    ++fCurrentEvent.num_censored_by_absorption;
+  else if (reason == "max_steps")
+    ++fCurrentEvent.num_censored_by_max_steps;
+  else if (reason == "max_path")
+    ++fCurrentEvent.num_censored_by_max_path;
+  else if (reason == "max_reentry")
+    ++fCurrentEvent.num_censored_by_max_reentry;
+  else if (reason == "reentry_failure")
+    ++fCurrentEvent.num_censored_by_reentry_failure;
+  else if (reason == "detection")
+    ++fCurrentEvent.num_censored_by_detection;
+  else if (reason == "target_scatter")
+    ++fCurrentEvent.num_censored_by_target_scatter;
+  else if (reason == "escape")
+    ++fCurrentEvent.num_censored_by_escape;
+  else if (reason == "event_end")
+    ++fCurrentEvent.num_censored_by_event_end;
+  else if (reason == "state_inconsistency")
+    ++fCurrentEvent.num_censored_by_state_inconsistency;
   fCurrentEvent.encounter_active = false;
   fCurrentEvent.encounter_has_matrix_entry = false;
   fCurrentEvent.source_inside_particle_pending_exit = false;

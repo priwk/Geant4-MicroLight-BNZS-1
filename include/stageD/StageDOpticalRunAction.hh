@@ -28,6 +28,10 @@ public:
   const std::string &GetEventsCsvPath() const { return fEventsCsvPath; }
   const std::string &GetSummaryCsvPath() const { return fSummaryCsvPath; }
   const std::string &GetPhaseFunctionCsvPath() const { return fPhaseFunctionCsvPath; }
+  const std::string &GetThresholdedPhaseFunctionCsvPath() const
+  {
+    return fThresholdedPhaseFunctionCsvPath;
+  }
   const std::string &GetReentryDiagnosticsCsvPath() const { return fReentryDiagnosticsCsvPath; }
   const std::string &GetRatioTag() const { return fRatioTag; }
   const std::string &GetPlacementStem() const { return fPlacementStem; }
@@ -53,6 +57,7 @@ private:
   std::string fEventsCsvPath;
   std::string fSummaryCsvPath;
   std::string fPhaseFunctionCsvPath;
+  std::string fThresholdedPhaseFunctionCsvPath;
   std::string fReentryDiagnosticsCsvPath;
   std::string fOutputDir;
   std::string fRatioTag;
@@ -65,6 +70,7 @@ private:
   StageDRunAccumulator fAccumulator;
   StageDReentryPortalSummary fReentryPortalSummary;
   G4long fReentryDiagnosticRowsWritten;
+  G4long fEventRowsWritten;
 };
 
 #endif

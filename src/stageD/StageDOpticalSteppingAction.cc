@@ -421,11 +421,10 @@ namespace
     const G4double oneMinusCosTheta = 1.0 - cosTheta;
     const G4double cos2Theta = cosTheta * cosTheta;
     const G4double thetaDeg = std::acos(cosTheta) / deg;
-    const G4bool useThresholdedEncounterMetric =
-        UsesAngleThresholdEncounterMetric(config);
     const G4bool passesEncounterThreshold =
         (config != nullptr) ? (thetaDeg >= config->stageD_theta_threshold_deg) : true;
 
+    const G4bool postFirstWindowActive = event.first_complete_encounter_seen;
     ++event.num_complete_encounter_total;
     ++event.num_encounter_total;
     event.sum_cos_theta_encounter += cosTheta;
@@ -438,8 +437,20 @@ namespace
       event.sum_one_minus_cos_theta_encounter_effective += oneMinusCosTheta;
       event.sum_cos2_theta_encounter_effective += cos2Theta;
     }
-    if (!useThresholdedEncounterMetric || passesEncounterThreshold)
-      ++event.phase_function_histogram[PhaseFunctionBin(cosTheta)];
+    ++event.phase_function_histogram_raw[PhaseFunctionBin(cosTheta)];
+    if (passesEncounterThreshold)
+      ++event.phase_function_histogram_thresholded[PhaseFunctionBin(cosTheta)];
+
+    if (postFirstWindowActive)
+    {
+      ++event.post_first_encounter_count_raw;
+      event.post_first_sum_cos_theta_raw += cosTheta;
+      event.post_first_sum_one_minus_cos_theta_raw += oneMinusCosTheta;
+    }
+    else
+    {
+      event.first_complete_encounter_seen = true;
+    }
 
     ++event.num_particle_scatter;
     event.sum_cos_theta_particle += cosTheta;
@@ -568,6 +579,41 @@ namespace
     return true;
   }
 
+  G4bool FindPeriodicEntryPoint(
+      const DetectorConstruction *detector,
+      const G4ThreeVector &exitPoint,
+      const G4ThreeVector &direction,
+      DetectorConstruction::Phase expectedPhase,
+      G4ThreeVector &entryPoint,
+      DetectorConstruction::Phase &entryPhase,
+      G4double &entryOffset,
+      G4int &searchTrials)
+  {
+    entryOffset = 0.0;
+    searchTrials = 0;
+    if (detector == nullptr || direction.mag2() <= 0.0)
+      return false;
+
+    const G4double surfaceTolerance =
+        G4GeometryTolerance::GetInstance()->GetSurfaceTolerance();
+    const G4double baseOffset = std::max(4.0 * surfaceTolerance, 1.0e-6 * um);
+    const G4ThreeVector unitDirection = direction.unit();
+    for (G4int scale = 1; scale <= 128; scale *= 2)
+    {
+      ++searchTrials;
+      const G4double offset = baseOffset * static_cast<G4double>(scale);
+      entryOffset = offset;
+      const G4ThreeVector candidate = detector->WrapToPrimaryCell(
+          exitPoint + offset * unitDirection);
+      const auto candidatePhase = detector->FindPhaseAtPoint(candidate);
+      entryPoint = candidate;
+      entryPhase = candidatePhase;
+      if (candidatePhase == expectedPhase)
+        return true;
+    }
+    return false;
+  }
+
   G4int PhaseFunctionBin(const G4double cosTheta)
   {
     constexpr G4double kMin = -1.0;
@@ -652,7 +698,6 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
   auto &event = fEventAction->MutableCurrentEvent();
   if (fConfig->stageD_boundary_mode == "escape")
   {
-    fEventAction->MarkCensoredEncounterIfActive();
     fEventAction->SetFinalStatus("escaped_debug", false);
     track->SetTrackStatus(fStopAndKill);
     return true;
@@ -734,17 +779,39 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
       return true;
     }
 
-    const G4ThreeVector newPosition = detector->WrapToPrimaryCellInside(
-        postPos, oldDir, kBoundaryEpsilon);
-    const auto entryPhase = detector->FindPhaseAtPoint(newPosition);
+    G4ThreeVector newPosition;
+    DetectorConstruction::Phase entryPhase = DetectorConstruction::Phase::Unknown;
+    G4double periodicEntryOffset = 0.0;
+    G4int periodicEntrySearchTrials = 0;
+    ++event.num_periodic_entry_search_attempts;
+    const G4bool foundMatchingEntry = FindPeriodicEntryPoint(
+        detector, exitPoint, oldDir, prePhase, newPosition, entryPhase,
+        periodicEntryOffset, periodicEntrySearchTrials);
+    event.sum_periodic_entry_search_trials += periodicEntrySearchTrials;
+    event.max_periodic_entry_search_trials = std::max(
+        event.max_periodic_entry_search_trials, periodicEntrySearchTrials);
+    event.max_periodic_entry_offset_um = std::max(
+        event.max_periodic_entry_offset_um, periodicEntryOffset / um);
+    if (foundMatchingEntry)
+    {
+      ++event.num_periodic_entry_search_success;
+      if (periodicEntrySearchTrials == 1)
+        ++event.num_periodic_entry_first_try_success;
+    }
     diag.entryPhase = entryPhase;
     diag.entryPoint = newPosition;
+    auto diagnosticRecord = MakeReentryDiagnosticRecord(ctx, diag);
+    diagnosticRecord.periodic_entry_offset_um = periodicEntryOffset / um;
+    diagnosticRecord.periodic_entry_search_trials = periodicEntrySearchTrials;
 
-    if (!IsReentryPhase(prePhase) || entryPhase != prePhase)
+    if (!IsReentryPhase(prePhase) || !foundMatchingEntry)
     {
       diag.fallbackLevel = "phase_mismatch";
       if (fRunAction != nullptr)
-        fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+      {
+        diagnosticRecord.fallback_level = diag.fallbackLevel;
+        fRunAction->RecordReentryDiagnostic(diagnosticRecord);
+      }
       ++event.num_reentry_failed;
       fEventAction->SetFinalStatus("periodic_phase_mismatch", false);
       track->SetTrackStatus(fStopAndKill);
@@ -760,7 +827,10 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
     {
       diag.fallbackLevel = "stack_unavailable";
       if (fRunAction != nullptr)
-        fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+      {
+        diagnosticRecord.fallback_level = diag.fallbackLevel;
+        fRunAction->RecordReentryDiagnostic(diagnosticRecord);
+      }
       ++event.num_reentry_failed;
       fEventAction->SetFinalStatus("reentry_failed", false);
       track->SetTrackStatus(fStopAndKill);
@@ -768,7 +838,7 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
     }
 
     if (fRunAction != nullptr)
-      fRunAction->RecordReentryDiagnostic(MakeReentryDiagnosticRecord(ctx, diag));
+      fRunAction->RecordReentryDiagnostic(diagnosticRecord);
     ++event.num_reentry;
     if (prePhase == DetectorConstruction::Phase::BN)
       ++event.num_reentry_BN;
@@ -804,13 +874,13 @@ G4bool StageDOpticalSteppingAction::HandleBoundaryReentry(
     if (!IsParticlePhase(prePhase) || encounterPhase != prePhase)
     {
       ++event.num_inconsistent_encounter_state;
-      fEventAction->MarkCensoredEncounterIfActive();
+      fEventAction->MarkCensoredEncounterIfActive("state_inconsistency");
     }
   }
   else if (event.source_inside_particle_pending_exit && !IsParticlePhase(prePhase))
   {
     ++event.num_inconsistent_encounter_state;
-    fEventAction->MarkCensoredEncounterIfActive();
+    fEventAction->MarkCensoredEncounterIfActive("state_inconsistency");
   }
 
   StageDReentrySampler::ReentryContext ctx;
@@ -963,6 +1033,28 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
                          : PhaseFromPhysicalVolume(postPV, detector);
 
   const G4double stepLengthUm = step->GetStepLength() / um;
+  if (!event.first_complete_encounter_seen)
+  {
+    if (prePhase == DetectorConstruction::Phase::BN ||
+        prePhase == DetectorConstruction::Phase::ZnS ||
+        prePhase == DetectorConstruction::Phase::Matrix)
+    {
+      event.path_before_first_complete_encounter_um += stepLengthUm;
+    }
+  }
+  else if (prePhase == DetectorConstruction::Phase::BN)
+  {
+    event.post_first_encounter_path_bn_um += stepLengthUm;
+  }
+  else if (prePhase == DetectorConstruction::Phase::ZnS)
+  {
+    event.post_first_encounter_path_zns_um += stepLengthUm;
+  }
+  else if (prePhase == DetectorConstruction::Phase::Matrix)
+  {
+    event.post_first_encounter_path_matrix_um += stepLengthUm;
+  }
+
   if (prePhase == DetectorConstruction::Phase::BN)
     event.path_length_bn_um += stepLengthUm;
   else if (prePhase == DetectorConstruction::Phase::ZnS)
@@ -981,6 +1073,19 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
   const G4ThreeVector preDir = prePoint->GetMomentumDirection();
   const G4ThreeVector postDir = postPoint->GetMomentumDirection();
   const G4bool isGeomBoundary = (postPoint->GetStepStatus() == fGeomBoundary);
+
+  if (processName == "OpAbsorption")
+  {
+    if ((event.encounter_active ||
+         event.source_inside_particle_pending_exit) &&
+        !IsParticlePhase(prePhase))
+    {
+      ++event.num_inconsistent_encounter_state;
+    }
+    fEventAction->MarkCensoredEncounterIfActive("absorption");
+    fEventAction->MarkAbsorbed(DetectorConstruction::PhaseName(prePhase));
+    return;
+  }
 
   if (isOuterRveBoundary)
   {
@@ -1021,14 +1126,12 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
 
     ++event.num_outer_boundary_reentry_algorithm_failed;
     ++event.num_outer_boundary_reentry_failed;
-    fEventAction->MarkCensoredEncounterIfActive();
     fEventAction->SetFinalStatus("reentry_failed", false);
     track->SetTrackStatus(fStopAndKill);
     return;
   }
 
-  if (processName == "OpAbsorption" ||
-      boundaryTransition == OpticalBoundaryTransition::Absorption)
+  if (boundaryTransition == OpticalBoundaryTransition::Absorption)
   {
     if ((event.encounter_active ||
          event.source_inside_particle_pending_exit) &&
@@ -1036,14 +1139,13 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
     {
       ++event.num_inconsistent_encounter_state;
     }
-    fEventAction->MarkCensoredEncounterIfActive();
+    fEventAction->MarkCensoredEncounterIfActive("absorption");
     fEventAction->MarkAbsorbed(DetectorConstruction::PhaseName(prePhase));
     return;
   }
 
   if (boundaryTransition == OpticalBoundaryTransition::Detection)
   {
-    fEventAction->MarkCensoredEncounterIfActive();
     fEventAction->SetFinalStatus("detected", false);
     return;
   }
@@ -1091,7 +1193,7 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
     if (event.encounter_active || event.source_inside_particle_pending_exit)
     {
       ++event.num_inconsistent_encounter_state;
-      fEventAction->MarkCensoredEncounterIfActive();
+      fEventAction->MarkCensoredEncounterIfActive("state_inconsistency");
     }
     event.encounter_active = true;
     event.encounter_has_matrix_entry = true;
@@ -1126,7 +1228,7 @@ void StageDOpticalSteppingAction::UserSteppingAction(const G4Step *step)
     else
     {
       ++event.num_inconsistent_encounter_state;
-      fEventAction->MarkCensoredEncounterIfActive();
+      fEventAction->MarkCensoredEncounterIfActive("state_inconsistency");
     }
   }
   else if (event.encounter_active &&

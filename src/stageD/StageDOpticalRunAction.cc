@@ -83,6 +83,23 @@ namespace
     return unitValue < samplingRate;
   }
 
+  G4bool KeepPhotonEvent(G4int photonId, G4double samplingRate)
+  {
+    if (samplingRate <= 0.0)
+      return false;
+    if (samplingRate >= 1.0)
+      return true;
+
+    std::uint64_t value = static_cast<std::uint32_t>(photonId);
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    value ^= value >> 31;
+    const G4double unitValue =
+        static_cast<G4double>(value >> 11) * (1.0 / 9007199254740992.0);
+    return unitValue < samplingRate;
+  }
+
   std::string SafePathComponent(const std::string &value)
   {
     std::string result = value.empty() ? "unset" : value;
@@ -103,6 +120,17 @@ namespace
     }
     return hash;
   }
+
+  std::size_t SourcePhaseIndex(const std::string &phase)
+  {
+    if (phase == "Matrix")
+      return 0;
+    if (phase == "BN")
+      return 1;
+    if (phase == "ZnS")
+      return 2;
+    return 3;
+  }
 }
 
 StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
@@ -113,6 +141,7 @@ StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
       fEventsCsvPath(""),
       fSummaryCsvPath(""),
       fPhaseFunctionCsvPath(""),
+      fThresholdedPhaseFunctionCsvPath(""),
       fReentryDiagnosticsCsvPath(""),
       fOutputDir(""),
       fRatioTag(""),
@@ -124,7 +153,8 @@ StageDOpticalRunAction::StageDOpticalRunAction(AnalysisConfig *config)
       fRandomSeed1(0),
       fAccumulator(),
       fReentryPortalSummary(),
-      fReentryDiagnosticRowsWritten(0)
+      fReentryDiagnosticRowsWritten(0),
+      fEventRowsWritten(0)
 {
 }
 
@@ -378,7 +408,31 @@ void StageDOpticalRunAction::WriteEventHeader()
       << "mean_cos_theta_for_this_photon_debug,"
       << "mean_cos_theta_bulk_for_this_photon_debug,"
       << "mean_cos_theta_boundary_for_this_photon_debug,"
-      << "weight"
+      << "weight,"
+      << "first_complete_encounter_seen,"
+      << "path_before_first_complete_encounter_um,"
+      << "post_first_encounter_path_bn_um,"
+      << "post_first_encounter_path_zns_um,"
+      << "post_first_encounter_path_matrix_um,"
+      << "post_first_encounter_count_raw,"
+      << "post_first_sum_cos_theta_raw,"
+      << "post_first_sum_one_minus_cos_theta_raw,"
+      << "num_censored_by_absorption,"
+      << "num_censored_by_max_steps,"
+      << "num_censored_by_max_path,"
+      << "num_censored_by_max_reentry,"
+      << "num_censored_by_reentry_failure,"
+      << "num_censored_by_event_end,"
+      << "num_censored_by_detection,"
+      << "num_censored_by_target_scatter,"
+      << "num_censored_by_escape,"
+      << "num_censored_by_state_inconsistency,"
+      << "num_periodic_entry_search_attempts,"
+      << "num_periodic_entry_search_success,"
+      << "num_periodic_entry_first_try_success,"
+      << "sum_periodic_entry_search_trials,"
+      << "max_periodic_entry_search_trials,"
+      << "max_periodic_entry_offset_um"
       << "\n";
 }
 
@@ -410,7 +464,9 @@ void StageDOpticalRunAction::WriteReentryDiagnosticsHeader()
       << "matrix_nearest_phase_entry,"
       << "matrix_clearance_bin_exit,"
       << "matrix_clearance_bin_entry,"
-      << "trials"
+      << "trials,"
+      << "periodic_entry_offset_um,"
+      << "periodic_entry_search_trials"
       << "\n";
 }
 
@@ -436,18 +492,26 @@ void StageDOpticalRunAction::OpenOutputs()
                      "stageD_summary.csv")
                         .string();
   fPhaseFunctionCsvPath = (std::filesystem::path(fOutputDir) /
-                           "phase_function.csv")
+                           "phase_function_raw.csv")
                               .string();
+  fThresholdedPhaseFunctionCsvPath =
+      (std::filesystem::path(fOutputDir) / "phase_function_thresholded.csv").string();
 
-  fEventsCsv.open(fEventsCsvPath.c_str(), std::ios::out);
-  if (!fEventsCsv)
+  if (fConfig != nullptr && fConfig->stageD_write_event_csv &&
+      fConfig->stageD_max_event_rows > 0 &&
+      fConfig->stageD_event_sampling_rate > 0.0)
   {
-    G4Exception("StageDOpticalRunAction::OpenOutputs",
-                "BNZS_D_RUN_002", FatalException,
-                ("Failed to open Stage D events CSV: " + fEventsCsvPath).c_str());
-    return;
+    fEventsCsv.open(fEventsCsvPath.c_str(), std::ios::out);
+    if (!fEventsCsv)
+    {
+      G4Exception("StageDOpticalRunAction::OpenOutputs",
+                  "BNZS_D_RUN_002", FatalException,
+                  ("Failed to open Stage D events CSV: " + fEventsCsvPath).c_str());
+      return;
+    }
+    fEventsCsv << std::setprecision(15);
+    WriteEventHeader();
   }
-  fEventsCsv << std::setprecision(15);
 
   if (fConfig != nullptr && fConfig->stageD_write_reentry_diagnostics &&
       fConfig->stageD_max_diagnostic_rows > 0 &&
@@ -465,7 +529,6 @@ void StageDOpticalRunAction::OpenOutputs()
     WriteReentryDiagnosticsHeader();
   }
 
-  WriteEventHeader();
 }
 
 void StageDOpticalRunAction::WriteGeometryMetadataFile(
@@ -507,6 +570,7 @@ void StageDOpticalRunAction::BeginOfRunAction(const G4Run *run)
   fAccumulator = StageDRunAccumulator{};
   fReentryPortalSummary = StageDReentryPortalSummary{};
   fReentryDiagnosticRowsWritten = 0;
+  fEventRowsWritten = 0;
   if (fEventsCsv.is_open())
     fEventsCsv.close();
   if (fReentryDiagnosticsCsv.is_open())
@@ -532,7 +596,10 @@ void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &ev
 {
   AccumulatePhotonEvent(event);
 
-  if (!fEventsCsv.is_open())
+  if (!fEventsCsv.is_open() || fConfig == nullptr ||
+      !fConfig->stageD_write_event_csv ||
+      fEventRowsWritten >= fConfig->stageD_max_event_rows ||
+      !KeepPhotonEvent(event.photonID, fConfig->stageD_event_sampling_rate))
     return;
 
   fEventsCsv
@@ -650,8 +717,33 @@ void StageDOpticalRunAction::RecordPhotonEvent(const StageDPhotonEventRecord &ev
       << event.mean_cos_theta_for_this_photon << ","
       << event.mean_cos_theta_bulk_for_this_photon << ","
       << event.mean_cos_theta_boundary_for_this_photon << ","
-      << event.weight
+      << event.weight << ","
+      << (event.first_complete_encounter_seen ? 1 : 0) << ","
+      << event.path_before_first_complete_encounter_um << ","
+      << event.post_first_encounter_path_bn_um << ","
+      << event.post_first_encounter_path_zns_um << ","
+      << event.post_first_encounter_path_matrix_um << ","
+      << event.post_first_encounter_count_raw << ","
+      << event.post_first_sum_cos_theta_raw << ","
+      << event.post_first_sum_one_minus_cos_theta_raw << ","
+      << event.num_censored_by_absorption << ","
+      << event.num_censored_by_max_steps << ","
+      << event.num_censored_by_max_path << ","
+      << event.num_censored_by_max_reentry << ","
+      << event.num_censored_by_reentry_failure << ","
+      << event.num_censored_by_event_end << ","
+      << event.num_censored_by_detection << ","
+      << event.num_censored_by_target_scatter << ","
+      << event.num_censored_by_escape << ","
+      << event.num_censored_by_state_inconsistency << ","
+      << event.num_periodic_entry_search_attempts << ","
+      << event.num_periodic_entry_search_success << ","
+      << event.num_periodic_entry_first_try_success << ","
+      << event.sum_periodic_entry_search_trials << ","
+      << event.max_periodic_entry_search_trials << ","
+      << event.max_periodic_entry_offset_um
       << "\n";
+  ++fEventRowsWritten;
 }
 
 void StageDOpticalRunAction::AccumulatePhotonEvent(
@@ -721,8 +813,76 @@ void StageDOpticalRunAction::AccumulatePhotonEvent(
   acc.sumCos2ThetaEncounterEffective += event.sum_cos2_theta_encounter_effective;
   acc.sumCos2ThetaEncounterEffectiveBN += event.sum_cos2_theta_encounter_effective_BN;
   acc.sumCos2ThetaEncounterEffectiveZnS += event.sum_cos2_theta_encounter_effective_ZnS;
-  for (std::size_t i = 0; i < acc.phaseFunctionCounts.size(); ++i)
-    acc.phaseFunctionCounts[i] += event.phase_function_histogram[i];
+  for (std::size_t i = 0; i < acc.phaseFunctionCountsRaw.size(); ++i)
+  {
+    acc.phaseFunctionCountsRaw[i] += event.phase_function_histogram_raw[i];
+    acc.phaseFunctionCountsThresholded[i] +=
+        event.phase_function_histogram_thresholded[i];
+  }
+  if (event.first_complete_encounter_seen)
+  {
+    ++acc.nPhotonsWithFirstCompleteEncounter;
+    acc.totalPathBeforeFirstCompleteEncounterSeenUm +=
+        event.path_before_first_complete_encounter_um;
+  }
+  acc.totalPathBeforeFirstCompleteEncounterUm +=
+      event.path_before_first_complete_encounter_um;
+  acc.totalPostFirstEncounterPathBNUm += event.post_first_encounter_path_bn_um;
+  acc.totalPostFirstEncounterPathZnSUm += event.post_first_encounter_path_zns_um;
+  acc.totalPostFirstEncounterPathMatrixUm += event.post_first_encounter_path_matrix_um;
+  acc.totalPostFirstEncounter += event.post_first_encounter_count_raw;
+  acc.sumPostFirstCosThetaEncounter += event.post_first_sum_cos_theta_raw;
+  acc.sumPostFirstOneMinusCosThetaEncounter +=
+      event.post_first_sum_one_minus_cos_theta_raw;
+  if (event.absorbed && event.first_complete_encounter_seen)
+    ++acc.totalPostFirstAbsorbed;
+  acc.totalCensoredByAbsorption += event.num_censored_by_absorption;
+  acc.totalCensoredByMaxSteps += event.num_censored_by_max_steps;
+  acc.totalCensoredByMaxPath += event.num_censored_by_max_path;
+  acc.totalCensoredByMaxReentry += event.num_censored_by_max_reentry;
+  acc.totalCensoredByReentryFailure += event.num_censored_by_reentry_failure;
+  acc.totalCensoredByEventEnd += event.num_censored_by_event_end;
+  acc.totalCensoredByDetection += event.num_censored_by_detection;
+  acc.totalCensoredByTargetScatter += event.num_censored_by_target_scatter;
+  acc.totalCensoredByEscape += event.num_censored_by_escape;
+  acc.totalCensoredByStateInconsistency +=
+      event.num_censored_by_state_inconsistency;
+
+  auto &sourceAcc = acc.sourcePhase[SourcePhaseIndex(event.source_phase)];
+  ++sourceAcc.nPhotons;
+  sourceAcc.nAbsorbed += event.num_absorbed_total;
+  sourceAcc.totalMediumPathUm += event.path_length_bn_um +
+                                 event.path_length_zns_um +
+                                 event.path_length_matrix_um;
+  sourceAcc.totalEncounter += event.num_encounter_total;
+  sourceAcc.sumCosThetaEncounter += event.sum_cos_theta_encounter;
+  sourceAcc.sumOneMinusCosThetaEncounter +=
+      event.sum_one_minus_cos_theta_encounter;
+  if (event.first_complete_encounter_seen)
+  {
+    ++sourceAcc.nWithFirstCompleteEncounter;
+    if (event.absorbed)
+      ++sourceAcc.nPostFirstAbsorbed;
+  }
+  sourceAcc.postFirstPathBNUm += event.post_first_encounter_path_bn_um;
+  sourceAcc.postFirstPathZnSUm += event.post_first_encounter_path_zns_um;
+  sourceAcc.postFirstPathMatrixUm += event.post_first_encounter_path_matrix_um;
+  sourceAcc.postFirstEncounter += event.post_first_encounter_count_raw;
+  sourceAcc.postFirstSumCosThetaEncounter += event.post_first_sum_cos_theta_raw;
+  sourceAcc.postFirstSumOneMinusCosThetaEncounter +=
+      event.post_first_sum_one_minus_cos_theta_raw;
+
+  acc.totalPeriodicEntrySearchAttempts +=
+      event.num_periodic_entry_search_attempts;
+  acc.totalPeriodicEntrySearchSuccess +=
+      event.num_periodic_entry_search_success;
+  acc.totalPeriodicEntryFirstTrySuccess +=
+      event.num_periodic_entry_first_try_success;
+  acc.totalPeriodicEntrySearchTrials += event.sum_periodic_entry_search_trials;
+  acc.maxPeriodicEntrySearchTrials = std::max(
+      acc.maxPeriodicEntrySearchTrials, event.max_periodic_entry_search_trials);
+  acc.maxPeriodicEntryOffsetUm = std::max(
+      acc.maxPeriodicEntryOffsetUm, event.max_periodic_entry_offset_um);
 
   acc.totalParticleScatter += event.num_particle_scatter;
   acc.totalParticleScatterBN += event.num_particle_scatter_BN;
@@ -823,7 +983,9 @@ void StageDOpticalRunAction::RecordReentryDiagnostic(
       << CsvQuote(record.matrix_nearest_phase_entry) << ","
       << record.matrix_clearance_bin_exit << ","
       << record.matrix_clearance_bin_entry << ","
-      << record.trials
+      << record.trials << ","
+      << record.periodic_entry_offset_um << ","
+      << record.periodic_entry_search_trials
       << "\n";
   ++fReentryDiagnosticRowsWritten;
 }
@@ -1055,6 +1217,168 @@ void StageDOpticalRunAction::WriteSummaryFile() const
                                                   ? sumOneMinusCosThetaEncounter / totalMediumPathLengthUm
                                                   : 0.0;
   const G4double muSPrimeEncounterFromG = muSEncounter * (1.0 - g1Encounter);
+  const G4double muSPrimeEncounterRawFromG =
+      (totalEncounter > 0) ? muSEncounterRaw * (1.0 - g1EncounterRaw) : 0.0;
+  const G4double muSPrimeConsistencyAbsError =
+      std::abs(muSPrimeDirectEncounterRaw - muSPrimeEncounterRawFromG);
+  const G4double muSPrimeConsistencyScale =
+      std::max({1.0e-15,
+                std::abs(muSPrimeDirectEncounterRaw),
+                std::abs(muSPrimeEncounterRawFromG)});
+  const G4double muSPrimeConsistencyRelativeError =
+      muSPrimeConsistencyAbsError / muSPrimeConsistencyScale;
+
+  const G4double postFirstEncounterMediumPathUm =
+      acc.totalPostFirstEncounterPathBNUm +
+      acc.totalPostFirstEncounterPathZnSUm +
+      acc.totalPostFirstEncounterPathMatrixUm;
+  const G4double postFirstEncounterMuS =
+      (postFirstEncounterMediumPathUm > 0.0)
+          ? static_cast<G4double>(acc.totalPostFirstEncounter) /
+                postFirstEncounterMediumPathUm
+          : 0.0;
+  const G4double postFirstEncounterG =
+      (acc.totalPostFirstEncounter > 0)
+          ? acc.sumPostFirstCosThetaEncounter /
+                static_cast<G4double>(acc.totalPostFirstEncounter)
+          : nan;
+  const G4double postFirstEncounterMuSPrime =
+      (postFirstEncounterMediumPathUm > 0.0)
+          ? acc.sumPostFirstOneMinusCosThetaEncounter /
+                postFirstEncounterMediumPathUm
+          : 0.0;
+  const G4double postFirstMuACount =
+      (postFirstEncounterMediumPathUm > 0.0)
+          ? static_cast<G4double>(acc.totalPostFirstAbsorbed) /
+                postFirstEncounterMediumPathUm
+          : 0.0;
+  const G4double postFirstMuAExpected =
+      (postFirstEncounterMediumPathUm > 0.0 && fConfig != nullptr)
+          ? ((acc.totalPostFirstEncounterPathBNUm /
+              std::max(1.0e-12, fConfig->opticalBnAbsLengthUm)) +
+             (acc.totalPostFirstEncounterPathZnSUm /
+              std::max(1.0e-12, fConfig->opticalZnsAbsLengthUm)) +
+             (acc.totalPostFirstEncounterPathMatrixUm /
+              std::max(1.0e-12, fConfig->opticalMatrixAbsLengthUm))) /
+                postFirstEncounterMediumPathUm
+          : 0.0;
+  const G4double initialTransientPathFraction =
+      (totalMediumPathLengthUm > 0.0)
+          ? acc.totalPathBeforeFirstCompleteEncounterUm /
+                totalMediumPathLengthUm
+          : 0.0;
+
+  std::array<G4double, 4> sourceMuS{};
+  std::array<G4double, 4> sourceG{};
+  std::array<G4double, 4> sourceMuSPrime{};
+  std::array<G4double, 4> sourcePostFirstPath{};
+  std::array<G4double, 4> sourcePostFirstMuA{};
+  std::array<G4double, 4> sourcePostFirstMuS{};
+  std::array<G4double, 4> sourcePostFirstG{};
+  std::array<G4double, 4> sourcePostFirstMuSPrime{};
+  sourceG.fill(nan);
+  sourcePostFirstG.fill(nan);
+  for (std::size_t i = 0; i < acc.sourcePhase.size(); ++i)
+  {
+    const auto &source = acc.sourcePhase[i];
+    if (source.totalMediumPathUm > 0.0)
+    {
+      sourceMuS[i] = static_cast<G4double>(source.totalEncounter) /
+                     source.totalMediumPathUm;
+      sourceMuSPrime[i] = source.sumOneMinusCosThetaEncounter /
+                          source.totalMediumPathUm;
+    }
+    if (source.totalEncounter > 0)
+    {
+      sourceG[i] = source.sumCosThetaEncounter /
+                   static_cast<G4double>(source.totalEncounter);
+    }
+    sourcePostFirstPath[i] = source.postFirstPathBNUm +
+                             source.postFirstPathZnSUm +
+                             source.postFirstPathMatrixUm;
+    if (sourcePostFirstPath[i] > 0.0)
+    {
+      sourcePostFirstMuA[i] = static_cast<G4double>(source.nPostFirstAbsorbed) /
+                              sourcePostFirstPath[i];
+      sourcePostFirstMuS[i] = static_cast<G4double>(source.postFirstEncounter) /
+                              sourcePostFirstPath[i];
+      sourcePostFirstMuSPrime[i] =
+          source.postFirstSumOneMinusCosThetaEncounter /
+          sourcePostFirstPath[i];
+    }
+    if (source.postFirstEncounter > 0)
+    {
+      sourcePostFirstG[i] = source.postFirstSumCosThetaEncounter /
+                            static_cast<G4double>(source.postFirstEncounter);
+    }
+  }
+
+  const G4double worldPathFraction =
+      (totalPathLengthUm > 0.0) ? totalPathLengthWorldUm / totalPathLengthUm : 0.0;
+  const G4double inconsistentEncounterFraction =
+      (totalMaterialBoundary > 0)
+          ? static_cast<G4double>(totalInconsistentEncounterState) /
+                static_cast<G4double>(totalMaterialBoundary)
+          : 0.0;
+  const G4double unknownReflectionFraction =
+      (totalMaterialBoundary > 0)
+          ? static_cast<G4double>(totalUnknownParticleReflection) /
+                static_cast<G4double>(totalMaterialBoundary)
+          : 0.0;
+  const G4double censoredAbsorptionFraction =
+      (totalCensoredParticleEncounter > 0)
+          ? static_cast<G4double>(acc.totalCensoredByAbsorption) /
+                static_cast<G4double>(totalCensoredParticleEncounter)
+          : 0.0;
+  const G4long totalCensoredByLimits =
+      acc.totalCensoredByMaxSteps + acc.totalCensoredByMaxPath +
+      acc.totalCensoredByMaxReentry + acc.totalCensoredByTargetScatter;
+  const G4double censoredLimitFraction =
+      (totalCensoredParticleEncounter > 0)
+          ? static_cast<G4double>(totalCensoredByLimits) /
+                static_cast<G4double>(totalCensoredParticleEncounter)
+          : 0.0;
+  const G4double worldPathToleranceUm =
+      std::max(1.0e-9, 1.0e-12 * totalMediumPathLengthUm);
+  const G4bool transportNumericsValid =
+      fConfig != nullptr &&
+      fConfig->stageD_boundary_mode == "periodic_wrap" &&
+      totalMediumPathLengthUm > 0.0 &&
+      totalEncounter > 0 &&
+      std::abs(totalPathLengthWorldUm) <= worldPathToleranceUm &&
+      totalOuterBoundaryPeriodicPhaseMismatch == 0 &&
+      totalOuterBoundaryReentryAlgorithmFailed == 0 &&
+      totalInconsistentEncounterState == 0 &&
+      totalParticleToParticleBoundary == 0 &&
+      totalUnknownParticleReflection == 0;
+  const G4bool physicsInputsValid =
+      fConfig != nullptr && fConfig->opticalParamsProvided;
+  const G4bool homogenizationWindowValid =
+      postFirstEncounterMediumPathUm > 0.0 &&
+      acc.totalPostFirstEncounter > 0;
+  const G4bool homogenizedMaterialExportValid =
+      transportNumericsValid &&
+      physicsInputsValid &&
+      fConfig != nullptr &&
+      fConfig->stageD_source_mode == "uniform_all_phase" &&
+      homogenizationWindowValid;
+  const G4double firstCompleteEncounterCoverage =
+      static_cast<G4double>(acc.nPhotonsWithFirstCompleteEncounter) / nPhotonsD;
+  const G4double periodicEntrySearchSuccessFraction =
+      (acc.totalPeriodicEntrySearchAttempts > 0)
+          ? static_cast<G4double>(acc.totalPeriodicEntrySearchSuccess) /
+                static_cast<G4double>(acc.totalPeriodicEntrySearchAttempts)
+          : 0.0;
+  const G4double periodicEntryFirstTryFraction =
+      (acc.totalPeriodicEntrySearchAttempts > 0)
+          ? static_cast<G4double>(acc.totalPeriodicEntryFirstTrySuccess) /
+                static_cast<G4double>(acc.totalPeriodicEntrySearchAttempts)
+          : 0.0;
+  const G4double meanPeriodicEntrySearchTrials =
+      (acc.totalPeriodicEntrySearchAttempts > 0)
+          ? static_cast<G4double>(acc.totalPeriodicEntrySearchTrials) /
+                static_cast<G4double>(acc.totalPeriodicEntrySearchAttempts)
+          : 0.0;
 
   const G4double muSParticle = (totalPathLengthUm > 0.0)
                                    ? static_cast<G4double>(totalParticleScatter) / totalPathLengthUm
@@ -1328,7 +1652,153 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << "theta_threshold_deg,"
       << "max_reentry,"
       << "max_steps,"
-      << "max_path_length_um"
+      << "max_path_length_um,"
+      << "stageD_mu_a_raw_per_um,"
+      << "stageD_mu_s_encounter_raw_per_um,"
+      << "stageD_g_encounter_raw,"
+      << "stageD_g2_encounter_raw,"
+      << "stageD_mu_s_prime_direct_raw_per_um,"
+      << "stageD_sum_cos_theta_encounter_raw,"
+      << "stageD_sum_one_minus_cos_theta_encounter_raw,"
+      << "stageD_g0_equivalent_mu_s_per_um,"
+      << "stageD_g0_equivalent_g,"
+      << "stageD_g0_equivalent_definition,"
+      << "mu_s_prime_from_g_raw_per_um,"
+      << "mu_s_prime_consistency_abs_error_per_um,"
+      << "mu_s_prime_consistency_relative_error,"
+      << "phase_function_raw_file,"
+      << "phase_function_thresholded_file,"
+      << "n_photons_with_first_complete_encounter,"
+      << "fraction_photons_with_first_complete_encounter,"
+      << "total_path_before_first_complete_encounter_um,"
+      << "mean_path_before_first_complete_encounter_um,"
+      << "mean_path_before_first_complete_encounter_seen_um,"
+      << "initial_transient_path_fraction,"
+      << "post_first_encounter_medium_path_um,"
+      << "post_first_encounter_count_raw,"
+      << "post_first_encounter_mu_s_raw_per_um,"
+      << "post_first_encounter_g_raw,"
+      << "post_first_encounter_mu_s_prime_raw_per_um,"
+      << "source_Matrix_n_photons,"
+      << "source_Matrix_total_medium_path_um,"
+      << "source_Matrix_num_encounter_raw,"
+      << "mu_s_raw_source_Matrix,"
+      << "g_raw_source_Matrix,"
+      << "mu_s_prime_raw_source_Matrix,"
+      << "source_Matrix_absorption_count,"
+      << "source_BN_n_photons,"
+      << "source_BN_total_medium_path_um,"
+      << "source_BN_num_encounter_raw,"
+      << "mu_s_raw_source_BN,"
+      << "g_raw_source_BN,"
+      << "mu_s_prime_raw_source_BN,"
+      << "source_BN_absorption_count,"
+      << "source_ZnS_n_photons,"
+      << "source_ZnS_total_medium_path_um,"
+      << "source_ZnS_num_encounter_raw,"
+      << "mu_s_raw_source_ZnS,"
+      << "g_raw_source_ZnS,"
+      << "mu_s_prime_raw_source_ZnS,"
+      << "source_ZnS_absorption_count,"
+      << "num_censored_by_absorption,"
+      << "num_censored_by_max_steps,"
+      << "num_censored_by_max_path,"
+      << "num_censored_by_max_reentry,"
+      << "num_censored_by_reentry_failure,"
+      << "num_censored_by_event_end,"
+      << "num_censored_by_detection,"
+      << "num_censored_by_target_scatter,"
+      << "num_censored_by_escape,"
+      << "num_censored_by_state_inconsistency,"
+      << "censored_absorption_fraction,"
+      << "censored_limit_fraction,"
+      << "world_path_fraction,"
+      << "inconsistent_encounter_fraction,"
+      << "unknown_reflection_fraction,"
+      << "periodic_phase_mismatch_count,"
+      << "periodic_reentry_algorithm_failed_count,"
+      << "g0_export_valid,"
+      << "stageD_g0_equivalent_basis,"
+      << "stageD_g0_full_path_mu_s_per_um,"
+      << "stageD_g0_full_path_g,"
+      << "stageD_g0_post_first_mu_s_per_um,"
+      << "stageD_g0_post_first_g,"
+      << "stageD_g0_post_first_definition,"
+      << "post_first_mu_a_count_per_um,"
+      << "post_first_mu_a_expected_per_um,"
+      << "post_first_absorption_count,"
+      << "post_first_burnin_complete_encounters,"
+      << "mu_s_contribution_BN_per_um,"
+      << "mu_s_contribution_ZnS_per_um,"
+      << "mu_s_prime_contribution_BN_per_um,"
+      << "mu_s_prime_contribution_ZnS_per_um,"
+      << "source_Invalid_n_photons,"
+      << "source_Invalid_total_medium_path_um,"
+      << "source_Invalid_num_encounter_raw,"
+      << "mu_s_raw_source_Invalid,"
+      << "g_raw_source_Invalid,"
+      << "mu_s_prime_raw_source_Invalid,"
+      << "source_Invalid_absorption_count,"
+      << "source_Matrix_n_with_first_complete_encounter,"
+      << "source_Matrix_first_complete_encounter_coverage,"
+      << "source_Matrix_post_first_medium_path_um,"
+      << "source_Matrix_post_first_encounter_count,"
+      << "source_Matrix_post_first_sum_cos_theta,"
+      << "source_Matrix_post_first_sum_one_minus_cos_theta,"
+      << "post_first_mu_a_source_Matrix_per_um,"
+      << "post_first_mu_s_source_Matrix_per_um,"
+      << "post_first_g_source_Matrix,"
+      << "post_first_mu_s_prime_source_Matrix_per_um,"
+      << "source_Matrix_post_first_absorption_count,"
+      << "source_BN_n_with_first_complete_encounter,"
+      << "source_BN_first_complete_encounter_coverage,"
+      << "source_BN_post_first_medium_path_um,"
+      << "source_BN_post_first_encounter_count,"
+      << "source_BN_post_first_sum_cos_theta,"
+      << "source_BN_post_first_sum_one_minus_cos_theta,"
+      << "post_first_mu_a_source_BN_per_um,"
+      << "post_first_mu_s_source_BN_per_um,"
+      << "post_first_g_source_BN,"
+      << "post_first_mu_s_prime_source_BN_per_um,"
+      << "source_BN_post_first_absorption_count,"
+      << "source_ZnS_n_with_first_complete_encounter,"
+      << "source_ZnS_first_complete_encounter_coverage,"
+      << "source_ZnS_post_first_medium_path_um,"
+      << "source_ZnS_post_first_encounter_count,"
+      << "source_ZnS_post_first_sum_cos_theta,"
+      << "source_ZnS_post_first_sum_one_minus_cos_theta,"
+      << "post_first_mu_a_source_ZnS_per_um,"
+      << "post_first_mu_s_source_ZnS_per_um,"
+      << "post_first_g_source_ZnS,"
+      << "post_first_mu_s_prime_source_ZnS_per_um,"
+      << "source_ZnS_post_first_absorption_count,"
+      << "source_Invalid_n_with_first_complete_encounter,"
+      << "source_Invalid_first_complete_encounter_coverage,"
+      << "source_Invalid_post_first_medium_path_um,"
+      << "source_Invalid_post_first_encounter_count,"
+      << "source_Invalid_post_first_sum_cos_theta,"
+      << "source_Invalid_post_first_sum_one_minus_cos_theta,"
+      << "post_first_mu_a_source_Invalid_per_um,"
+      << "post_first_mu_s_source_Invalid_per_um,"
+      << "post_first_g_source_Invalid,"
+      << "post_first_mu_s_prime_source_Invalid_per_um,"
+      << "source_Invalid_post_first_absorption_count,"
+      << "transport_numerics_valid,"
+      << "physics_inputs_valid,"
+      << "homogenization_window_valid,"
+      << "homogenized_material_export_valid,"
+      << "first_complete_encounter_coverage,"
+      << "periodic_entry_search_attempts,"
+      << "periodic_entry_search_success,"
+      << "periodic_entry_search_success_fraction,"
+      << "periodic_entry_first_try_success,"
+      << "periodic_entry_first_try_fraction,"
+      << "periodic_entry_search_trials_total,"
+      << "periodic_entry_search_trials_mean,"
+      << "periodic_entry_search_trials_max,"
+      << "periodic_entry_offset_max_um,"
+      << "event_csv_enabled,"
+      << "event_csv_rows_written"
       << "\n";
 
   fout
@@ -1494,7 +1964,142 @@ void StageDOpticalRunAction::WriteSummaryFile() const
       << (fConfig ? fConfig->stageD_theta_threshold_deg : 0.0) << ","
       << (fConfig ? fConfig->stageD_max_reentry : 0) << ","
       << (fConfig ? fConfig->stageD_max_steps : 0) << ","
-      << (fConfig ? fConfig->stageD_max_path_length_um : 0.0)
+      << (fConfig ? fConfig->stageD_max_path_length_um : 0.0) << ","
+      << muACount << ","
+      << muSEncounterRaw << ","
+      << g1EncounterRaw << ","
+      << g2EncounterRaw << ","
+      << muSPrimeDirectEncounterRaw << ","
+      << sumCosThetaEncounter << ","
+      << sumOneMinusCosThetaEncounter << ","
+      << muSPrimeDirectEncounterRaw << ","
+      << 0.0 << ","
+      << "mu_s_iso_equiv_equals_mu_s_prime_direct_raw,"
+      << muSPrimeEncounterRawFromG << ","
+      << muSPrimeConsistencyAbsError << ","
+      << muSPrimeConsistencyRelativeError << ","
+      << CsvQuote(std::filesystem::path(fPhaseFunctionCsvPath).filename().string()) << ","
+      << CsvQuote(std::filesystem::path(fThresholdedPhaseFunctionCsvPath).filename().string()) << ","
+      << acc.nPhotonsWithFirstCompleteEncounter << ","
+      << static_cast<G4double>(acc.nPhotonsWithFirstCompleteEncounter) / nPhotonsD << ","
+      << acc.totalPathBeforeFirstCompleteEncounterUm << ","
+      << acc.totalPathBeforeFirstCompleteEncounterUm / nPhotonsD << ","
+      << (acc.nPhotonsWithFirstCompleteEncounter > 0
+              ? acc.totalPathBeforeFirstCompleteEncounterSeenUm /
+                    static_cast<G4double>(acc.nPhotonsWithFirstCompleteEncounter)
+              : 0.0)
+      << ","
+      << initialTransientPathFraction << ","
+      << postFirstEncounterMediumPathUm << ","
+      << acc.totalPostFirstEncounter << ","
+      << postFirstEncounterMuS << ","
+      << postFirstEncounterG << ","
+      << postFirstEncounterMuSPrime << ","
+      << acc.sourcePhase[0].nPhotons << ","
+      << acc.sourcePhase[0].totalMediumPathUm << ","
+      << acc.sourcePhase[0].totalEncounter << ","
+      << sourceMuS[0] << ","
+      << sourceG[0] << ","
+      << sourceMuSPrime[0] << ","
+      << acc.sourcePhase[0].nAbsorbed << ","
+      << acc.sourcePhase[1].nPhotons << ","
+      << acc.sourcePhase[1].totalMediumPathUm << ","
+      << acc.sourcePhase[1].totalEncounter << ","
+      << sourceMuS[1] << ","
+      << sourceG[1] << ","
+      << sourceMuSPrime[1] << ","
+      << acc.sourcePhase[1].nAbsorbed << ","
+      << acc.sourcePhase[2].nPhotons << ","
+      << acc.sourcePhase[2].totalMediumPathUm << ","
+      << acc.sourcePhase[2].totalEncounter << ","
+      << sourceMuS[2] << ","
+      << sourceG[2] << ","
+      << sourceMuSPrime[2] << ","
+      << acc.sourcePhase[2].nAbsorbed << ","
+      << acc.totalCensoredByAbsorption << ","
+      << acc.totalCensoredByMaxSteps << ","
+      << acc.totalCensoredByMaxPath << ","
+      << acc.totalCensoredByMaxReentry << ","
+      << acc.totalCensoredByReentryFailure << ","
+      << acc.totalCensoredByEventEnd << ","
+      << acc.totalCensoredByDetection << ","
+      << acc.totalCensoredByTargetScatter << ","
+      << acc.totalCensoredByEscape << ","
+      << acc.totalCensoredByStateInconsistency << ","
+      << censoredAbsorptionFraction << ","
+      << censoredLimitFraction << ","
+      << worldPathFraction << ","
+      << inconsistentEncounterFraction << ","
+      << unknownReflectionFraction << ","
+      << totalOuterBoundaryPeriodicPhaseMismatch << ","
+      << totalOuterBoundaryReentryAlgorithmFailed << ","
+      << (transportNumericsValid ? 1 : 0) << ","
+      << "full_path,"
+      << muSPrimeDirectEncounterRaw << ","
+      << 0.0 << ","
+      << postFirstEncounterMuSPrime << ","
+      << 0.0 << ","
+      << "mu_s_iso_equiv_equals_post_first_mu_s_prime_raw,"
+      << postFirstMuACount << ","
+      << postFirstMuAExpected << ","
+      << acc.totalPostFirstAbsorbed << ","
+      << 1 << ","
+      << muSEncounterRawBN << ","
+      << muSEncounterRawZnS << ","
+      << (muSEncounterRawBN * (1.0 - g1EncounterRawBN)) << ","
+      << (muSEncounterRawZnS * (1.0 - g1EncounterRawZnS)) << ","
+      << acc.sourcePhase[3].nPhotons << ","
+      << acc.sourcePhase[3].totalMediumPathUm << ","
+      << acc.sourcePhase[3].totalEncounter << ","
+      << sourceMuS[3] << ","
+      << sourceG[3] << ","
+      << sourceMuSPrime[3] << ","
+      << acc.sourcePhase[3].nAbsorbed << ",";
+
+  for (std::size_t i = 0; i < acc.sourcePhase.size(); ++i)
+  {
+    const auto &source = acc.sourcePhase[i];
+    fout
+        << source.nWithFirstCompleteEncounter << ","
+        << (source.nPhotons > 0
+                ? static_cast<G4double>(source.nWithFirstCompleteEncounter) /
+                      static_cast<G4double>(source.nPhotons)
+                : 0.0)
+        << ","
+        << sourcePostFirstPath[i] << ","
+        << source.postFirstEncounter << ","
+        << source.postFirstSumCosThetaEncounter << ","
+        << source.postFirstSumOneMinusCosThetaEncounter << ","
+        << sourcePostFirstMuA[i] << ","
+        << sourcePostFirstMuS[i] << ","
+        << sourcePostFirstG[i] << ","
+        << sourcePostFirstMuSPrime[i] << ","
+        << source.nPostFirstAbsorbed << ",";
+  }
+
+  fout
+      << (transportNumericsValid ? 1 : 0) << ","
+      << (physicsInputsValid ? 1 : 0) << ","
+      << (homogenizationWindowValid ? 1 : 0) << ","
+      << (homogenizedMaterialExportValid ? 1 : 0) << ","
+      << firstCompleteEncounterCoverage << ","
+      << acc.totalPeriodicEntrySearchAttempts << ","
+      << acc.totalPeriodicEntrySearchSuccess << ","
+      << periodicEntrySearchSuccessFraction << ","
+      << acc.totalPeriodicEntryFirstTrySuccess << ","
+      << periodicEntryFirstTryFraction << ","
+      << acc.totalPeriodicEntrySearchTrials << ","
+      << meanPeriodicEntrySearchTrials << ","
+      << acc.maxPeriodicEntrySearchTrials << ","
+      << acc.maxPeriodicEntryOffsetUm << ","
+      << ((fConfig != nullptr &&
+           fConfig->stageD_write_event_csv &&
+           fConfig->stageD_max_event_rows > 0 &&
+           fConfig->stageD_event_sampling_rate > 0.0)
+              ? 1
+              : 0)
+      << ","
+      << fEventRowsWritten
       << "\n";
   fout.close();
 
@@ -1508,41 +2113,55 @@ void StageDOpticalRunAction::WriteSummaryFile() const
 
 void StageDOpticalRunAction::WritePhaseFunctionFile() const
 {
-  std::ofstream fout(fPhaseFunctionCsvPath.c_str(), std::ios::out);
-  if (!fout)
+  const auto writeHistogram = [&](const std::string &path, const auto &counts)
   {
-    G4Exception("StageDOpticalRunAction::WritePhaseFunctionFile",
-                "BNZS_D_RUN_004", FatalException,
-                ("Failed to open Stage D phase function CSV: " + fPhaseFunctionCsvPath).c_str());
+    std::ofstream fout(path.c_str(), std::ios::out);
+    if (!fout)
+    {
+      G4Exception("StageDOpticalRunAction::WritePhaseFunctionFile",
+                  "BNZS_D_RUN_004", FatalException,
+                  ("Failed to open Stage D phase function CSV: " + path).c_str());
+      return false;
+    }
+    fout << std::setprecision(15);
+
+    G4long totalCount = 0;
+    for (const auto count : counts)
+      totalCount += count;
+
+    fout << "lambda_nm,bin_id,cos_theta_min,cos_theta_max,count,probability,probability_density\n";
+    const G4double binWidth = 2.0 / static_cast<G4double>(counts.size());
+    for (std::size_t i = 0; i < counts.size(); ++i)
+    {
+      const G4double cosMin = -1.0 + static_cast<G4double>(i) * binWidth;
+      const G4double cosMax = cosMin + binWidth;
+      const G4double probability =
+          (totalCount > 0) ? static_cast<G4double>(counts[i]) / static_cast<G4double>(totalCount) : 0.0;
+      const G4double density = (binWidth > 0.0) ? probability / binWidth : 0.0;
+      fout << (fConfig ? fConfig->stageD_wavelength_nm : 0.0) << ","
+           << i << ","
+           << cosMin << ","
+           << cosMax << ","
+           << counts[i] << ","
+           << probability << ","
+           << density << "\n";
+    }
+    return true;
+  };
+
+  if (!writeHistogram(fPhaseFunctionCsvPath, fAccumulator.phaseFunctionCountsRaw))
     return;
-  }
-  fout << std::setprecision(15);
-
-  const auto &counts = fAccumulator.phaseFunctionCounts;
-  G4long totalCount = 0;
-  for (const auto count : counts)
-    totalCount += count;
-
-  fout << "lambda_nm,bin_id,cos_theta_min,cos_theta_max,count,probability,probability_density\n";
-  const G4double binWidth = 2.0 / static_cast<G4double>(counts.size());
-  for (std::size_t i = 0; i < counts.size(); ++i)
-  {
-    const G4double cosMin = -1.0 + static_cast<G4double>(i) * binWidth;
-    const G4double cosMax = cosMin + binWidth;
-    const G4double probability =
-        (totalCount > 0) ? static_cast<G4double>(counts[i]) / static_cast<G4double>(totalCount) : 0.0;
-    const G4double density = (binWidth > 0.0) ? (probability / binWidth) : 0.0;
-    fout << (fConfig ? fConfig->stageD_wavelength_nm : 0.0) << ","
-         << i << ","
-         << cosMin << ","
-         << cosMax << ","
-         << counts[i] << ","
-         << probability << ","
-         << density << "\n";
-  }
-  fout.close();
+  if (!writeHistogram(fThresholdedPhaseFunctionCsvPath,
+                      fAccumulator.phaseFunctionCountsThresholded))
+    return;
 
   std::error_code copyEc;
+  std::filesystem::copy_file(
+      fPhaseFunctionCsvPath,
+      (std::filesystem::path(fOutputDir) / "phase_function.csv").string(),
+      std::filesystem::copy_options::overwrite_existing,
+      copyEc);
+  copyEc.clear();
   std::filesystem::copy_file(
       fPhaseFunctionCsvPath,
       (std::filesystem::path(fOutputDir) / "phase_function_lambda.csv").string(),
@@ -1563,7 +2182,13 @@ void StageDOpticalRunAction::EndOfRunAction(const G4Run *run)
   WritePhaseFunctionFile();
 
   G4cout << "[StageDOpticalRunAction] End run"
-         << "\n  events csv  = " << fEventsCsvPath
+         << "\n  events csv  = "
+         << (fConfig != nullptr &&
+                     fConfig->stageD_write_event_csv &&
+                     fConfig->stageD_max_event_rows > 0 &&
+                     fConfig->stageD_event_sampling_rate > 0.0
+                 ? fEventsCsvPath
+                 : "disabled")
          << "\n  summary csv = " << fSummaryCsvPath
          << "\n  phase csv   = " << fPhaseFunctionCsvPath
          << "\n  n photons   = " << fAccumulator.nPhotons

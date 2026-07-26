@@ -14,8 +14,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numeric>
-#include <vector>
 
 namespace
 {
@@ -35,7 +33,12 @@ StageDOpticalPrimaryGeneratorAction::StageDOpticalPrimaryGeneratorAction(
     : G4VUserPrimaryGeneratorAction(),
       fConfig(config),
       fParticleGun(new G4ParticleGun(1)),
-      fCurrentPhoton()
+      fCurrentPhoton(),
+      fZnSCdfDetector(nullptr),
+      fZnSCdfPlacementSeed(0),
+      fZnSCdfSphereCount(0),
+      fZnSSphereCdf(),
+      fZnSSphereTotalWeight(0.0)
 {
   fParticleGun->SetParticleDefinition(
       G4OpticalPhoton::OpticalPhotonDefinition());
@@ -96,14 +99,8 @@ G4ThreeVector StageDOpticalPrimaryGeneratorAction::SampleUniformPointInZnSSphere
     return G4ThreeVector();
   }
 
-  std::vector<G4double> weights;
-  weights.reserve(spheres.size());
-  for (const auto &sphere : spheres)
-    weights.push_back(std::pow(sphere.radius, 3));
-
-  const G4double totalWeight =
-      std::accumulate(weights.begin(), weights.end(), 0.0);
-  if (totalWeight <= 0.0)
+  PrepareZnSSphereCdf(detector);
+  if (fZnSSphereTotalWeight <= 0.0 || fZnSSphereCdf.size() != spheres.size())
   {
     G4Exception("StageDOpticalPrimaryGeneratorAction::SampleUniformPointInZnSSphere",
                 "BNZS_D_PRI_003", FatalException,
@@ -111,21 +108,44 @@ G4ThreeVector StageDOpticalPrimaryGeneratorAction::SampleUniformPointInZnSSphere
     return G4ThreeVector();
   }
 
-  const G4double target = G4UniformRand() * totalWeight;
-  G4double cumulative = 0.0;
-  const DetectorConstruction::SphereInfo *selected = &spheres.front();
-  for (std::size_t i = 0; i < spheres.size(); ++i)
-  {
-    cumulative += weights[i];
-    if (target <= cumulative)
-    {
-      selected = &spheres[i];
-      break;
-    }
-  }
+  const G4double target = G4UniformRand() * fZnSSphereTotalWeight;
+  const auto selectedIt = std::lower_bound(
+      fZnSSphereCdf.begin(), fZnSSphereCdf.end(), target);
+  const std::size_t selectedIndex = selectedIt == fZnSSphereCdf.end()
+                                        ? spheres.size() - 1
+                                        : static_cast<std::size_t>(
+                                              selectedIt - fZnSSphereCdf.begin());
+  const auto *selected = &spheres[selectedIndex];
 
   const G4double radius = selected->radius * std::cbrt(G4UniformRand());
   return detector->WrapToPrimaryCell(selected->center + radius * RandomUnitVector());
+}
+
+void StageDOpticalPrimaryGeneratorAction::PrepareZnSSphereCdf(
+    const DetectorConstruction *detector) const
+{
+  if (detector == nullptr)
+    return;
+
+  const auto &spheres = detector->GetZnSSpheres();
+  const std::uint64_t placementSeed = detector->GetPlacementSeed();
+  if (fZnSCdfDetector == detector &&
+      fZnSCdfPlacementSeed == placementSeed &&
+      fZnSCdfSphereCount == spheres.size() &&
+      fZnSSphereCdf.size() == spheres.size())
+    return;
+
+  fZnSCdfDetector = detector;
+  fZnSCdfPlacementSeed = placementSeed;
+  fZnSCdfSphereCount = spheres.size();
+  fZnSSphereCdf.clear();
+  fZnSSphereCdf.reserve(spheres.size());
+  fZnSSphereTotalWeight = 0.0;
+  for (const auto &sphere : spheres)
+  {
+    fZnSSphereTotalWeight += std::pow(sphere.radius, 3);
+    fZnSSphereCdf.push_back(fZnSSphereTotalWeight);
+  }
 }
 
 G4ThreeVector StageDOpticalPrimaryGeneratorAction::SampleUniformPointInWholeRve(
@@ -149,6 +169,12 @@ G4ThreeVector StageDOpticalPrimaryGeneratorAction::SampleUniformPointInWholeRve(
       (2.0 * G4UniformRand() - 1.0) * halfY,
       (2.0 * G4UniformRand() - 1.0) * halfZ);
   phaseName = PhaseToString(detector->FindPhaseAtPoint(point));
+  if (phaseName != "Matrix" && phaseName != "BN" && phaseName != "ZnS")
+  {
+    G4Exception("StageDOpticalPrimaryGeneratorAction::SampleUniformPointInWholeRve",
+                "BNZS_D_PRI_007", FatalException,
+                ("Uniform RVE source resolved to invalid phase: " + phaseName).c_str());
+  }
   return point;
 }
 
@@ -178,6 +204,15 @@ void StageDOpticalPrimaryGeneratorAction::GeneratePrimaries(G4Event *event)
   if (fConfig->stageD_source_mode == "uniform_ZnS")
   {
     sourcePosition = SampleUniformPointInZnSSphere();
+    const auto *detector = ResolveDetector();
+    if (detector == nullptr ||
+        detector->FindPhaseAtPoint(sourcePosition) != DetectorConstruction::Phase::ZnS)
+    {
+      G4Exception("StageDOpticalPrimaryGeneratorAction::GeneratePrimaries",
+                  "BNZS_D_PRI_008", FatalException,
+                  "uniform_ZnS source sampling did not resolve to the ZnS phase.");
+      return;
+    }
     sourcePhase = "ZnS";
   }
   else

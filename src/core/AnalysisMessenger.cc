@@ -177,15 +177,27 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
       fStageDSourceModeCmd(nullptr),
       fStageDBoundaryModeCmd(nullptr),
       fStageDReentryModeCmd(nullptr),
+      fStageDParticleReentryModeCmd(nullptr),
       fStageDMatrixReentryModeCmd(nullptr),
+      fStageDScatterMetricCmd(nullptr),
+      fStageDTargetPrimaryScatterCmd(nullptr),
       fStageDThetaThresholdDegCmd(nullptr),
       fStageDMaxReentryCmd(nullptr),
       fStageDMaxStepsCmd(nullptr),
       fStageDMaxPathLengthUmCmd(nullptr),
       fStageDOutputDirCmd(nullptr),
+      fStageDPortalNuCmd(nullptr),
+      fStageDPortalNvCmd(nullptr),
+      fStageDPortalMarginUmCmd(nullptr),
+      fStageDClearanceBinEdgesCmd(nullptr),
+      fStageDMaxParticleReentryTrialsCmd(nullptr),
+      fStageDMaxPortalFallbackLevelCmd(nullptr),
       fStageDWriteReentryDiagnosticsCmd(nullptr),
       fStageDReentryDiagnosticsSamplingRateCmd(nullptr),
       fStageDMaxDiagnosticRowsCmd(nullptr),
+      fStageDWriteEventCsvCmd(nullptr),
+      fStageDEventSamplingRateCmd(nullptr),
+      fStageDMaxEventRowsCmd(nullptr),
       fOpticalParamsCmd(nullptr),
       fWeightRatioCmd(nullptr)
 {
@@ -269,8 +281,8 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
 
   fStageDScatterMetricCmd = new G4UIcmdWithAString("/cfg/stageD/setScatterMetric", this);
   fStageDScatterMetricCmd->SetGuidance(
-      "Set Stage D primary scatter metric: particle_encounter_angle_threshold | angle_threshold | "
-      "particle_encounter_no_threshold.");
+      "Set Stage D primary scatter metric: particle_encounter_no_threshold for formal raw statistics; "
+      "particle_encounter_angle_threshold or angle_threshold for diagnostics.");
   fStageDScatterMetricCmd->SetParameterName("scatterMetric", false);
   fStageDScatterMetricCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
@@ -282,7 +294,8 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fStageDTargetPrimaryScatterCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
   fStageDThetaThresholdDegCmd = new G4UIcmdWithADouble("/cfg/stageD/setThetaThresholdDeg", this);
-  fStageDThetaThresholdDegCmd->SetGuidance("Set Stage D minimum direction change angle counted as effective scatter.");
+  fStageDThetaThresholdDegCmd->SetGuidance(
+      "Set the diagnostic effective-scatter angle threshold. Raw encounter outputs are unaffected.");
   fStageDThetaThresholdDegCmd->SetParameterName("thetaThresholdDeg", false);
   fStageDThetaThresholdDegCmd->SetRange("thetaThresholdDeg>=0.");
   fStageDThetaThresholdDegCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
@@ -373,6 +386,29 @@ AnalysisMessenger::AnalysisMessenger(AnalysisConfig *config)
   fStageDMaxDiagnosticRowsCmd->SetRange("maxRows>=0");
   fStageDMaxDiagnosticRowsCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
+  fStageDWriteEventCsvCmd =
+      new G4UIcmdWithABool("/cfg/stageD/setWriteEventCsv", this);
+  fStageDWriteEventCsvCmd->SetGuidance(
+      "Enable per-photon Stage D event CSV output. Summary accumulation is always enabled.");
+  fStageDWriteEventCsvCmd->SetParameterName("enabled", false);
+  fStageDWriteEventCsvCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
+  fStageDEventSamplingRateCmd =
+      new G4UIcmdWithADouble("/cfg/stageD/setEventSamplingRate", this);
+  fStageDEventSamplingRateCmd->SetGuidance(
+      "Set deterministic Stage D event CSV sampling rate in [0,1].");
+  fStageDEventSamplingRateCmd->SetParameterName("samplingRate", false);
+  fStageDEventSamplingRateCmd->SetRange("samplingRate>=0. && samplingRate<=1.");
+  fStageDEventSamplingRateCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
+  fStageDMaxEventRowsCmd =
+      new G4UIcmdWithAnInteger("/cfg/stageD/setMaxEventRows", this);
+  fStageDMaxEventRowsCmd->SetGuidance(
+      "Set maximum Stage D event CSV rows; 0 disables row output.");
+  fStageDMaxEventRowsCmd->SetParameterName("maxRows", false);
+  fStageDMaxEventRowsCmd->SetRange("maxRows>=0");
+  fStageDMaxEventRowsCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
   fOpticalParamsCmd = new G4UIcommand("/cfg/setOpticalParams", this);
   fOpticalParamsCmd->SetGuidance("Set optical material parameters used by Stage D.");
   fOpticalParamsCmd->SetGuidance("Usage: /cfg/setOpticalParams <matrix_n> <matrix_abs_um> <bn_n> <bn_abs_um> <zns_n> <zns_abs_um>");
@@ -410,6 +446,9 @@ AnalysisMessenger::~AnalysisMessenger()
 {
   delete fWeightRatioCmd;
   delete fOpticalParamsCmd;
+  delete fStageDMaxEventRowsCmd;
+  delete fStageDEventSamplingRateCmd;
+  delete fStageDWriteEventCsvCmd;
   delete fStageDMaxDiagnosticRowsCmd;
   delete fStageDReentryDiagnosticsSamplingRateCmd;
   delete fStageDWriteReentryDiagnosticsCmd;
@@ -424,6 +463,8 @@ AnalysisMessenger::~AnalysisMessenger()
   delete fStageDMaxStepsCmd;
   delete fStageDMaxReentryCmd;
   delete fStageDThetaThresholdDegCmd;
+  delete fStageDTargetPrimaryScatterCmd;
+  delete fStageDScatterMetricCmd;
   delete fStageDMatrixReentryModeCmd;
   delete fStageDParticleReentryModeCmd;
   delete fStageDReentryModeCmd;
@@ -810,6 +851,31 @@ void AnalysisMessenger::SetNewValue(G4UIcommand *command, G4String newValue)
     G4cout << "[AnalysisMessenger] stageD_max_diagnostic_rows set to "
            << fConfig->stageD_max_diagnostic_rows
            << G4endl;
+    return;
+  }
+  if (command == fStageDWriteEventCsvCmd)
+  {
+    fConfig->stageD_write_event_csv =
+        fStageDWriteEventCsvCmd->GetNewBoolValue(newValue);
+    G4cout << "[AnalysisMessenger] stageD_write_event_csv set to "
+           << (fConfig->stageD_write_event_csv ? "true" : "false")
+           << G4endl;
+    return;
+  }
+  if (command == fStageDEventSamplingRateCmd)
+  {
+    fConfig->stageD_event_sampling_rate =
+        fStageDEventSamplingRateCmd->GetNewDoubleValue(newValue);
+    G4cout << "[AnalysisMessenger] stageD_event_sampling_rate set to "
+           << fConfig->stageD_event_sampling_rate << G4endl;
+    return;
+  }
+  if (command == fStageDMaxEventRowsCmd)
+  {
+    fConfig->stageD_max_event_rows =
+        fStageDMaxEventRowsCmd->GetNewIntValue(newValue);
+    G4cout << "[AnalysisMessenger] stageD_max_event_rows set to "
+           << fConfig->stageD_max_event_rows << G4endl;
     return;
   }
   if (command == fOpticalParamsCmd)

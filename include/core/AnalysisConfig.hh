@@ -78,6 +78,9 @@ public:
   bool stageD_write_reentry_diagnostics;
   double stageD_reentry_diagnostics_sampling_rate;
   int stageD_max_diagnostic_rows;
+  bool stageD_write_event_csv;
+  double stageD_event_sampling_rate;
+  int stageD_max_event_rows;
 
   // ---- Stage B 深度映射兼容开关 ----
   // true: 允许 thickness_um == local patch thickness

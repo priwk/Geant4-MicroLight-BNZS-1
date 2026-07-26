@@ -46,6 +46,8 @@ struct StageDReentryDiagnosticRecord
   G4int matrix_clearance_bin_entry = -1;
 
   G4int trials = 0;
+  G4double periodic_entry_offset_um = 0.0;
+  G4int periodic_entry_search_trials = 0;
 };
 
 struct StageDReentryPortalSummary
@@ -188,13 +190,59 @@ struct StageDPhotonEventRecord
   G4double mean_cos_theta_boundary_for_this_photon = 0.0;
   G4double weight = 1.0;
 
-  std::array<G4int, kPhaseFunctionBins> phase_function_histogram{};
+  std::array<G4int, kPhaseFunctionBins> phase_function_histogram_raw{};
+  std::array<G4int, kPhaseFunctionBins> phase_function_histogram_thresholded{};
+
+  G4bool first_complete_encounter_seen = false;
+  G4double path_before_first_complete_encounter_um = 0.0;
+  G4double post_first_encounter_path_bn_um = 0.0;
+  G4double post_first_encounter_path_zns_um = 0.0;
+  G4double post_first_encounter_path_matrix_um = 0.0;
+  G4int post_first_encounter_count_raw = 0;
+  G4double post_first_sum_cos_theta_raw = 0.0;
+  G4double post_first_sum_one_minus_cos_theta_raw = 0.0;
+
+  G4int num_censored_by_absorption = 0;
+  G4int num_censored_by_max_steps = 0;
+  G4int num_censored_by_max_path = 0;
+  G4int num_censored_by_max_reentry = 0;
+  G4int num_censored_by_reentry_failure = 0;
+  G4int num_censored_by_event_end = 0;
+  G4int num_censored_by_detection = 0;
+  G4int num_censored_by_target_scatter = 0;
+  G4int num_censored_by_escape = 0;
+  G4int num_censored_by_state_inconsistency = 0;
+
+  G4int num_periodic_entry_search_attempts = 0;
+  G4int num_periodic_entry_search_success = 0;
+  G4int num_periodic_entry_first_try_success = 0;
+  G4int sum_periodic_entry_search_trials = 0;
+  G4int max_periodic_entry_search_trials = 0;
+  G4double max_periodic_entry_offset_um = 0.0;
 
   G4bool encounter_active = false;
   G4bool encounter_has_matrix_entry = false;
   G4bool source_inside_particle_pending_exit = false;
   std::string encounter_particle_phase;
   G4ThreeVector encounter_matrix_entry_direction;
+};
+
+struct StageDSourcePhaseAccumulator
+{
+  G4long nPhotons = 0;
+  G4long nAbsorbed = 0;
+  G4double totalMediumPathUm = 0.0;
+  G4long totalEncounter = 0;
+  G4double sumCosThetaEncounter = 0.0;
+  G4double sumOneMinusCosThetaEncounter = 0.0;
+  G4long nWithFirstCompleteEncounter = 0;
+  G4long nPostFirstAbsorbed = 0;
+  G4double postFirstPathBNUm = 0.0;
+  G4double postFirstPathZnSUm = 0.0;
+  G4double postFirstPathMatrixUm = 0.0;
+  G4long postFirstEncounter = 0;
+  G4double postFirstSumCosThetaEncounter = 0.0;
+  G4double postFirstSumOneMinusCosThetaEncounter = 0.0;
 };
 
 struct StageDRunAccumulator
@@ -243,7 +291,35 @@ struct StageDRunAccumulator
   G4double sumCos2ThetaEncounterEffective = 0.0;
   G4double sumCos2ThetaEncounterEffectiveBN = 0.0;
   G4double sumCos2ThetaEncounterEffectiveZnS = 0.0;
-  std::array<G4long, StageDPhotonEventRecord::kPhaseFunctionBins> phaseFunctionCounts{};
+  std::array<G4long, StageDPhotonEventRecord::kPhaseFunctionBins> phaseFunctionCountsRaw{};
+  std::array<G4long, StageDPhotonEventRecord::kPhaseFunctionBins> phaseFunctionCountsThresholded{};
+  G4long nPhotonsWithFirstCompleteEncounter = 0;
+  G4double totalPathBeforeFirstCompleteEncounterUm = 0.0;
+  G4double totalPathBeforeFirstCompleteEncounterSeenUm = 0.0;
+  G4double totalPostFirstEncounterPathBNUm = 0.0;
+  G4double totalPostFirstEncounterPathZnSUm = 0.0;
+  G4double totalPostFirstEncounterPathMatrixUm = 0.0;
+  G4long totalPostFirstEncounter = 0;
+  G4double sumPostFirstCosThetaEncounter = 0.0;
+  G4double sumPostFirstOneMinusCosThetaEncounter = 0.0;
+  G4long totalPostFirstAbsorbed = 0;
+  G4long totalCensoredByAbsorption = 0;
+  G4long totalCensoredByMaxSteps = 0;
+  G4long totalCensoredByMaxPath = 0;
+  G4long totalCensoredByMaxReentry = 0;
+  G4long totalCensoredByReentryFailure = 0;
+  G4long totalCensoredByEventEnd = 0;
+  G4long totalCensoredByDetection = 0;
+  G4long totalCensoredByTargetScatter = 0;
+  G4long totalCensoredByEscape = 0;
+  G4long totalCensoredByStateInconsistency = 0;
+  std::array<StageDSourcePhaseAccumulator, 4> sourcePhase{};
+  G4long totalPeriodicEntrySearchAttempts = 0;
+  G4long totalPeriodicEntrySearchSuccess = 0;
+  G4long totalPeriodicEntryFirstTrySuccess = 0;
+  G4long totalPeriodicEntrySearchTrials = 0;
+  G4int maxPeriodicEntrySearchTrials = 0;
+  G4double maxPeriodicEntryOffsetUm = 0.0;
   G4long totalParticleScatter = 0;
   G4long totalParticleScatterBN = 0;
   G4long totalParticleScatterZnS = 0;

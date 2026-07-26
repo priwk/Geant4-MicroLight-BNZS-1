@@ -10,6 +10,7 @@
   - `mu_s_raw`
   - `g_raw`
   - `mu_s_prime_raw`
+  - 显式 `g=0` 等效输入：`mu_s_MC = mu_s_prime_raw`, `g_MC = 0`
 - `n_eff_initial` 还没有放进 C++ 主程序输出，建议先在后处理里计算
 - 目前还不应把这组参数直接当作“实验校正后的最终参数”
 
@@ -63,7 +64,7 @@ StageD 的目标不是宏观厚度出光模拟，而是对单个随机 RVE 做�
 
 - `one run = one placement`
 - `many runs = many placements`
-- 最终参数应来自多 placement 的 ensemble average
+- 最终参数应对多 placement 的分子、分母分别求和，再计算 ratio-of-sums
 
 ## 4. 当前使用建议
 
@@ -143,8 +144,9 @@ cat >/tmp/stageD_run.mac <<'EOF'
 /cfg/stageD/setReentryMode state_matched
 /cfg/stageD/setParticleReentryMode sphere_q_mu
 /cfg/stageD/setMatrixReentryMode clearance_binned_portal
+/cfg/stageD/setScatterMetric particle_encounter_no_threshold
 /cfg/stageD/setTargetPrimaryScatter 0
-/cfg/stageD/setThetaThresholdDeg 0.1
+/cfg/stageD/setThetaThresholdDeg 0
 /cfg/stageD/setMaxReentry 10000
 /cfg/stageD/setMaxSteps 100000
 /cfg/stageD/setMaxPathLengthUm 1000000
@@ -246,9 +248,13 @@ Output/stageD_optical_homogenization/<ratio>/<placement_stem>/<wavelength>/
 其中主要文件：
 
 ```text
-optical_homogenization_events.csv
-optical_homogenization_summary.csv
+stageD_summary.csv
+phase_function_raw.csv
+phase_function_thresholded.csv
+rve_geometry_metadata.csv
 ```
+
+`stageD_events.csv` 默认关闭；使用 `--write-event-csv` 后才按采样率和最大行数写出。
 
 批处理脚本还会生成：
 
@@ -274,6 +280,18 @@ logs/stageD/<ratio>/
 - `mu_s_raw_per_um`
 - `g_raw`
 - `mu_s_prime_raw_per_um`
+- `stageD_mu_s_encounter_raw_per_um`
+- `stageD_g_encounter_raw`
+- `stageD_mu_s_prime_direct_raw_per_um`
+- `stageD_g0_equivalent_mu_s_per_um`
+- `stageD_g0_equivalent_g`
+- `stageD_g0_full_path_mu_s_per_um`
+- `stageD_g0_post_first_mu_s_per_um`
+- `post_first_encounter_mu_s_prime_raw_per_um`
+- `initial_transient_path_fraction`
+- `transport_numerics_valid`
+- `physics_inputs_valid`
+- `homogenized_material_export_valid`
 
 当前推荐先检查：
 
@@ -281,6 +299,15 @@ logs/stageD/<ratio>/
 - `mu_s_raw_per_um` 是否非 0
 - `g_raw` 是否非 0
 - `mean_num_reentry` 是否处在合理范围
+- `world_path_fraction`、周期 mismatch 和算法失败是否为 0
+- `mu_s_prime_consistency_relative_error` 是否接近浮点舍入误差
+
+合并后：
+
+- `phase_function_raw_by_ratio.csv` 是按所有 placement 的 encounter count 汇总的原生相函数
+- `monte_carlo_recommended_inputs.csv` 同时给出原生、full-path `g=0` 和 post-first moving-photon `g=0` 模型
+- 原生模型使用 Stage D 的 `mu_s`、`g` 与 raw 相函数
+- `g=0` 模型必须使用 `mu_s = mu_s_prime_raw`，不能使用原生 `mu_s` 再强制 `g=0`
 
 ## 10. events 里看什么
 
